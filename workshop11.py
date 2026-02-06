@@ -1520,15 +1520,16 @@ elif st.session_state.current_step == 3:
                     else:
                         st.warning(fb)
                 
-                # Show learning content
+                # Show learning content directly (no nested expander)
                 predefined = answer.get("predefined_threat")
                 if predefined:
-                    with st.expander("📚 Learn Why"):
-                        st.markdown(f"**Explanation:**\n\n{predefined['explanation']}")
-                        st.markdown(f"**Why This Risk Level:**\n\n{predefined['why_this_risk']}")
-                        st.markdown(f"**Why These Controls Work:**\n\n{predefined['why_these_controls']}")
-                        st.markdown(f"**Real-World Example:**\n\n{predefined['real_world']}")
-                        st.markdown(f"**Compliance:** {predefined['compliance']}")
+                    st.markdown("---")
+                    st.markdown("### 📚 Learn Why")
+                    st.markdown(f"**Explanation:**\n\n{predefined.get('explanation', 'N/A')}")
+                    st.markdown(f"**Why This Risk Level:**\n\n{predefined.get('why_this_risk', 'N/A')}")
+                    st.markdown(f"**Why These Controls Work:**\n\n{predefined.get('why_these_controls', 'N/A')}")
+                    st.markdown(f"**Real-World Example:**\n\n{predefined.get('real_world', 'N/A')}")
+                    st.markdown(f"**Compliance:** {predefined.get('compliance', 'N/A')}")
     
     # Progress indicator
     progress = len(st.session_state.user_answers) / current_workshop['target_threats']
