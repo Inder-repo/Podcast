@@ -1428,7 +1428,7 @@ def generate_complete_threat_model_pdf(workshop_config, workshop_id):
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
         ]))
-        story.append(comp_table))
+        story.append(comp_table)
         story.append(Spacer(1, 0.2*inch))
         
         story.append(Paragraph("3.2 Data Flows", subheading_style))
