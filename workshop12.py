@@ -1023,7 +1023,9 @@ def generate_attack_tree(tree_structure, title="Attack Tree"):
         dot.attr("node", fontname="Arial", fontsize="9", shape="box", style="rounded,filled")
         dot.attr("edge", fontname="Arial", fontsize="8")
         
-        def add_nodes(node, parent_id=None, node_counter=[0]):
+        node_counter = [0]  # Use list to allow modification in nested function
+        
+        def add_nodes(node, parent_id=None):
             """Recursively add nodes to the graph"""
             node_counter[0] += 1
             current_id = f"node_{node_counter[0]}"
@@ -1032,6 +1034,7 @@ def generate_attack_tree(tree_structure, title="Attack Tree"):
             if node.get("type") == "goal":
                 color = "#FFCDD2"  # Light red for main goal
                 shape = "oval"
+                label_text = node['label']
             elif node.get("type") == "and":
                 color = "#BBDEFB"  # Light blue for AND
                 shape = "box"
@@ -1043,12 +1046,13 @@ def generate_attack_tree(tree_structure, title="Attack Tree"):
             elif node.get("type") == "leaf":
                 color = "#FFF9C4"  # Light yellow for attack steps
                 shape = "box"
+                label_text = node['label']
             else:
                 color = "#E0E0E0"
                 shape = "box"
+                label_text = node.get('label', 'Unknown')
             
             # Add difficulty/cost if present
-            label_text = node['label']
             if node.get("difficulty"):
                 label_text += f"\\n({node['difficulty']})"
             
@@ -1061,7 +1065,7 @@ def generate_attack_tree(tree_structure, title="Attack Tree"):
             
             # Process children
             for child in node.get("children", []):
-                add_nodes(child, current_id, node_counter)
+                add_nodes(child, current_id)
             
             return current_id
         
@@ -1072,7 +1076,7 @@ def generate_attack_tree(tree_structure, title="Attack Tree"):
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
-        st.error(f"Attack tree generation error: {e}")
+        st.error(f"Attack tree generation error: {str(e)}")
         return None
 
 def calculate_threat_score(user_threat, predefined_threat):
@@ -2004,7 +2008,10 @@ elif st.session_state.current_step == 3:
         if attack_tree_img:
             st.image(f"data:image/png;base64,{attack_tree_img}",
                      caption=attack_tree_data["title"],
-                     use_container_width=True)
+                     use_column_width=True)
+        else:
+            st.warning("Attack tree visualization unavailable. Please review the text description below.")
+            st.json(attack_tree_data["tree"])
         
         # Explain the tree
         st.markdown("---")
