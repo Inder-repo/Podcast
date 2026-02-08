@@ -1984,10 +1984,11 @@ elif st.session_state.current_step == 5:
     if score_pct >= 90:
         st.balloons()
     
-    st.markdown(f'<div class="{"score-excellent" if score_pct >= 90 else "score-good"}">
+    score_class = "score-excellent" if score_pct >= 90 else "score-good"
+    st.markdown(f'''<div class="{score_class}">
         🏆 Workshop Complete!<br>
         Final Score: {score_pct:.1f}%
-    </div>', unsafe_allow_html=True)
+    </div>''', unsafe_allow_html=True)
     
     if st.session_state.selected_workshop not in st.session_state.completed_workshops:
         st.session_state.completed_workshops.add(st.session_state.selected_workshop)
