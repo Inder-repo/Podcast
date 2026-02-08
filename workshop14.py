@@ -20,7 +20,28 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, 
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from io import BytesIO
 
-st.set_page_config(page_title="STRIDE Threat Modeling Enterprise Lab", page_icon="🔒", layout="wide")
+# Hide Streamlit elements for cleaner UI
+st.set_page_config(
+    page_title="STRIDE Threat Modeling Enterprise Lab", 
+    page_icon="🔒", 
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': None,
+        'Report a bug': None,
+        'About': "STRIDE Threat Modeling Enterprise Lab - Professional Security Training Platform"
+    }
+)
+
+# Hide Streamlit branding and menu
+hide_streamlit_style = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # UNLOCK CODES - STORED HERE FOR REFERENCE ONLY, NEVER DISPLAYED IN UI
 WORKSHOP_CODES = {"1": None, "2": "MICRO2025", "3": "TENANT2025", "4": "HEALTH2025"}
@@ -882,7 +903,7 @@ def generate_high_level_architecture(workshop_config):
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
-        st.error(f"Diagram error: {e}")
+        st.warning("⚠️ Unable to generate diagram. Please continue with the workshop.")
         return None
 
 def generate_detailed_dfd(workshop_config, threats=[]):
@@ -978,7 +999,7 @@ def generate_detailed_dfd(workshop_config, threats=[]):
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
-        st.error(f"DFD error: {e}")
+        st.warning("⚠️ Unable to generate detailed diagram. Continuing with text-based analysis.")
         return None
 
 
@@ -1205,7 +1226,7 @@ def generate_complete_threat_model_pdf(workshop_config, workshop_id):
         return buffer.getvalue()
         
     except Exception as e:
-        st.error(f"PDF generation error: {str(e)}")
+        st.warning("⚠️ Unable to generate PDF report at this time. Please try downloading CSV results instead.")
         return None
 
 
@@ -1787,7 +1808,7 @@ elif st.session_state.current_step == 3:
     
     # Threat Selection Form
     with st.form("threat_form"):
-        st.subheading("➕ Select Threat to Analyze")
+        st.subheader("➕ Select Threat to Analyze")
         
         threat_options = {
             f"{t['id']}: {t['threat'][:70]}...": t 
