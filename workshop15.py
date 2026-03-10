@@ -16,20 +16,45 @@ import pandas as pd
 from graphviz import Digraph
 from datetime import datetime
 import random
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
-                                 PageBreak, Table, TableStyle)
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from io import BytesIO
+
+def _get_reportlab():
+    """Lazy-load reportlab only when a PDF is actually requested."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.lib import colors
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                                     PageBreak, Table, TableStyle)
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    return (letter, getSampleStyleSheet, ParagraphStyle, inch, colors,
+            SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table,
+            TableStyle, TA_CENTER, TA_LEFT)
 
 st.set_page_config(
     page_title="STRIDE Threat Modeling Learning Lab",
     page_icon="🔒",
     layout="wide"
 )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA CACHE HELPERS - loaded once per server session, not per rerun
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_resource
+def get_predefined_threats():
+    """Return threat DB - cached at resource level (parsed only once)."""
+    return PREDEFINED_THREATS
+
+@st.cache_resource
+def get_workshops():
+    """Return workshop configs - cached at resource level."""
+    return WORKSHOPS
+
+@st.cache_resource
+def get_attack_trees():
+    """Return attack trees - cached at resource level."""
+    return ATTACK_TREES
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UNLOCK CODES  (never shown in UI)
@@ -1341,7 +1366,10 @@ ZONE_FONT_COLORS = {
 }
 
 
-def generate_zone_labeled_dfd(workshop_config, show_stride_rules=False, threats=None):
+@st.cache_data(show_spinner=False)
+def generate_zone_labeled_dfd(workshop_config_json, show_stride_rules=False, threats_json=None):
+    workshop_config = json.loads(workshop_config_json)
+    threats = json.loads(threats_json) if threats_json else None
     """Generate DFD with criticality zone labels (Infosec methodology Step 2)."""
     try:
         dot = Digraph(comment="Zone-Labeled DFD", format="png")
@@ -1447,12 +1475,12 @@ def generate_zone_labeled_dfd(workshop_config, show_stride_rules=False, threats=
         return None
 
 
-def generate_stride_annotated_dfd(workshop_config, threats=None):
-    """DFD with STRIDE annotations on edges and nodes (Step 3 output)."""
-    return generate_zone_labeled_dfd(workshop_config, show_stride_rules=True, threats=threats)
+# generate_stride_annotated_dfd merged into generate_zone_labeled_dfd
 
 
-def generate_attack_tree(tree_structure, title="Attack Tree"):
+@st.cache_data(show_spinner=False)
+def generate_attack_tree(tree_json, title="Attack Tree"):
+    tree_structure = json.loads(tree_json)
     """Generate attack tree visualization."""
     try:
         dot = Digraph(comment=title, format="png")
@@ -1566,6 +1594,9 @@ def save_progress():
 
 
 def load_progress():
+    """Only load from disk if session state hasn't been initialised yet."""
+    if st.session_state.get('_progress_loaded'):
+        return
     try:
         if os.path.exists("/tmp/threat_progress.json"):
             with open("/tmp/threat_progress.json") as f:
@@ -1580,6 +1611,7 @@ def load_progress():
             st.session_state.max_score = p.get("max_score", 0)
     except Exception:
         pass
+    st.session_state['_progress_loaded'] = True
 
 
 load_progress()
@@ -1594,6 +1626,9 @@ def is_workshop_unlocked(ws_id):
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, max_score):
     try:
+        (letter, getSampleStyleSheet, ParagraphStyle, inch, colors,
+         SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table,
+         TableStyle, TA_CENTER, TA_LEFT) = _get_reportlab()
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter,
                                 topMargin=0.75 * inch, bottomMargin=0.75 * inch)
@@ -1685,13 +1720,16 @@ def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, m
 
 def generate_complete_threat_model_pdf(workshop_config, workshop_id):
     try:
+        (letter, getSampleStyleSheet, ParagraphStyle, inch, colors,
+         SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table,
+         TableStyle, TA_CENTER, TA_LEFT) = _get_reportlab()
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=letter,
                                 topMargin=0.75 * inch, bottomMargin=0.75 * inch)
         styles = getSampleStyleSheet()
         story = []
 
-        all_threats = PREDEFINED_THREATS.get(workshop_id, [])
+        all_threats = get_predefined_threats().get(workshop_id, [])
 
         title_style = ParagraphStyle('T', parent=styles['Heading1'], fontSize=22,
                                      textColor=colors.HexColor('#1976D2'),
@@ -1812,7 +1850,7 @@ with st.sidebar:
         st.markdown("---")
 
     st.markdown("### Select Workshop")
-    for ws_id, ws_config in WORKSHOPS.items():
+    for ws_id, ws_config in get_workshops().items():
         unlocked = is_workshop_unlocked(ws_id)
         completed = ws_id in st.session_state.completed_workshops
         col1, col2 = st.columns([3, 1])
@@ -1861,10 +1899,12 @@ with st.sidebar:
                         else:
                             st.error("❌ Invalid code")
 
-        with st.expander("ℹ️ Details"):
-            st.caption(f"**Level:** {ws_config['level']}")
-            st.caption(f"**Duration:** {ws_config['duration']}")
-            st.caption(f"**Threats:** {ws_config['target_threats']}")
+        # Only show detail expander for selected workshop to avoid rendering all
+        if st.session_state.selected_workshop == ws_id:
+            with st.expander("ℹ️ Details", expanded=False):
+                st.caption(f"**Level:** {ws_config['level']}")
+                st.caption(f"**Duration:** {ws_config['duration']}")
+                st.caption(f"**Threats:** {ws_config['target_threats']}")
 
     st.markdown("---")
     with st.expander("📚 STRIDE Quick Reference"):
@@ -1920,7 +1960,7 @@ if not st.session_state.selected_workshop:
     # Workshop progression
     st.markdown("### 📊 Progressive Workshop Architecture")
     cols2 = st.columns(4)
-    for idx, (ws_id, ws) in enumerate(WORKSHOPS.items()):
+    for idx, (ws_id, ws) in enumerate(get_workshops().items()):
         with cols2[idx]:
             unlocked = is_workshop_unlocked(ws_id)
             completed = ws_id in st.session_state.completed_workshops
@@ -1957,8 +1997,8 @@ if not st.session_state.selected_workshop:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  WORKSHOP SELECTED – STEP NAVIGATION
 # ═══════════════════════════════════════════════════════════════════════════════
-current_workshop = WORKSHOPS[st.session_state.selected_workshop]
-workshop_threats = PREDEFINED_THREATS.get(st.session_state.selected_workshop, [])
+current_workshop = get_workshops()[st.session_state.selected_workshop]
+workshop_threats = get_predefined_threats().get(st.session_state.selected_workshop, [])
 
 st.title(current_workshop["name"])
 st.markdown(f"**{current_workshop['level']}** | **{current_workshop['scenario']['title']}** | "
@@ -2278,7 +2318,7 @@ elif st.session_state.current_step == 2:
         """, unsafe_allow_html=True)
 
         with st.spinner("Generating zone-labeled DFD..."):
-            zone_dfd = generate_zone_labeled_dfd(current_workshop)
+            zone_dfd = generate_zone_labeled_dfd(json.dumps(current_workshop, default=str))
 
         if zone_dfd:
             st.image(f"data:image/png;base64,{zone_dfd}",
@@ -2738,7 +2778,7 @@ elif st.session_state.current_step == 3:
     st.markdown("---")
     st.subheader(f"📊 Attack Tree: {current_workshop['architecture_type']}")
 
-    attack_tree_data = ATTACK_TREES.get(st.session_state.selected_workshop, {})
+    attack_tree_data = get_attack_trees().get(st.session_state.selected_workshop, {})
     if attack_tree_data:
         st.markdown(f"""
         <div class="learning-box">
@@ -2748,7 +2788,7 @@ elif st.session_state.current_step == 3:
         """, unsafe_allow_html=True)
 
         with st.spinner("Generating attack tree..."):
-            tree_img = generate_attack_tree(attack_tree_data["tree"], attack_tree_data["title"])
+            tree_img = generate_attack_tree(json.dumps(attack_tree_data["tree"]), attack_tree_data["title"])
 
         if tree_img:
             st.image(f"data:image/png;base64,{tree_img}",
@@ -3092,7 +3132,7 @@ elif st.session_state.current_step == 5:
     """, unsafe_allow_html=True)
 
     with st.spinner("Generating STRIDE-annotated zone DFD..."):
-        mapped_dfd = generate_stride_annotated_dfd(current_workshop, st.session_state.threats)
+        mapped_dfd = generate_zone_labeled_dfd(json.dumps(current_workshop, default=str), show_stride_rules=True, threats_json=json.dumps(st.session_state.threats, default=str))
 
     if mapped_dfd:
         st.image(f"data:image/png;base64,{mapped_dfd}",
@@ -3222,30 +3262,38 @@ elif st.session_state.current_step == 5:
             "text/csv", use_container_width=True
         )
     with col2:
-        with st.spinner("Building your PDF..."):
-            user_pdf = generate_user_threat_model_pdf(
-                current_workshop, st.session_state.user_answers,
-                st.session_state.total_score, st.session_state.max_score
-            )
-        if user_pdf:
-            st.download_button(
-                "📄 My Threat Model PDF",
-                user_pdf,
-                f"my_threat_model_ws{st.session_state.selected_workshop}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                "application/pdf", use_container_width=True
-            )
+        if st.button("📄 Generate My Threat Model PDF", use_container_width=True):
+            with st.spinner("Building PDF..."):
+                user_pdf = generate_user_threat_model_pdf(
+                    current_workshop, st.session_state.user_answers,
+                    st.session_state.total_score, st.session_state.max_score
+                )
+            if user_pdf:
+                st.download_button(
+                    "⬇️ Download My PDF",
+                    user_pdf,
+                    f"my_threat_model_ws{st.session_state.selected_workshop}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    "application/pdf", use_container_width=True,
+                    key="dl_user_pdf"
+                )
+            else:
+                st.error("PDF generation failed")
     with col3:
-        with st.spinner("Building reference PDF..."):
-            complete_pdf = generate_complete_threat_model_pdf(
-                current_workshop, st.session_state.selected_workshop
-            )
-        if complete_pdf:
-            st.download_button(
-                "📚 Complete Reference PDF",
-                complete_pdf,
-                f"complete_model_ws{st.session_state.selected_workshop}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                "application/pdf", use_container_width=True
-            )
+        if st.button("📚 Generate Complete Reference PDF", use_container_width=True):
+            with st.spinner("Building reference PDF (may take ~10s)..."):
+                complete_pdf = generate_complete_threat_model_pdf(
+                    current_workshop, st.session_state.selected_workshop
+                )
+            if complete_pdf:
+                st.download_button(
+                    "⬇️ Download Reference PDF",
+                    complete_pdf,
+                    f"complete_model_ws{st.session_state.selected_workshop}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    "application/pdf", use_container_width=True,
+                    key="dl_complete_pdf"
+                )
+            else:
+                st.error("PDF generation failed")
 
     st.markdown("---")
     col1, col2 = st.columns(2)
