@@ -8,6 +8,9 @@ import hashlib
 import re
 from pathlib import Path
 import plotly.graph_objects as go
+import random
+import pandas as pd
+import io
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -1567,7 +1570,7 @@ def render_step_q2stride(ws):
         ctrl_correct = (threat.get("controls_correct") or [""])[0]
         ctrl_wrong   = (threat.get("controls_wrong") or [])[:2]
         ctrl_opts    = [ctrl_correct] + ctrl_wrong
-        import random; random.shuffle(ctrl_opts)
+        random.shuffle(ctrl_opts)
         correct_ctrl_idx = ctrl_opts.index(ctrl_correct) if ctrl_correct in ctrl_opts else 0
         qrev = ss(sk+"_qrev_mit", False)
         qcho = ss(sk+"_qcho_mit", None)
@@ -1868,7 +1871,7 @@ def render_step_q3(ws):
         ctrl_correct = (threat.get("controls_correct") or [""])[0]
         ctrl_wrong   = (threat.get("controls_wrong") or [])[:2]
         ctrl_opts    = [ctrl_correct] + ctrl_wrong
-        import random; random.shuffle(ctrl_opts)
+        random.shuffle(ctrl_opts)
         correct_ctrl_idx = ctrl_opts.index(ctrl_correct) if ctrl_correct in ctrl_opts else 0
 
         st.markdown("**Which control blocks this attack? Click MITIGATED above to see it animate.**")
@@ -2020,7 +2023,6 @@ def render_step_cert(ws):
     # Threat model summary table
     st.markdown("**Your Threat Model — Summary**")
     if answers:
-        import pandas as pd
         rows = []
         for a in answers:
             t = a.get("threat", {})
@@ -2035,7 +2037,6 @@ def render_step_cert(ws):
         st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
         # Export
-        import io
         df = pd.DataFrame(rows)
         csv = df.to_csv(index=False)
         st.download_button(
