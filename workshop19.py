@@ -755,8 +755,8 @@ def render_architecture(ws, hot_nodes=None, hot_flows=None, sim_mode="attack",
         is_hot = name in hot_nodes
         is_rev = name in reveal_nodes
 
-        fill = (("#66bb6a" if sim_mode=="mitigated" else "#ef5350")+"22") if is_hot else \
-               ("#ffa72618" if is_rev else "#0d1219")
+        fill = ("rgba(102,187,106,0.13)" if sim_mode=="mitigated" else "rgba(239,83,80,0.13)") if is_hot else \
+               ("rgba(255,167,38,0.09)" if is_rev else "#0d1219")
         border_col = ("#66bb6a" if sim_mode=="mitigated" else "#ef5350") if is_hot else \
                      ("#ffa726" if is_rev else zcol)
         border_w = 2.5 if is_hot else (2.0 if is_rev else 1.0)
@@ -797,7 +797,7 @@ def render_architecture(ws, hot_nodes=None, hot_flows=None, sim_mode="attack",
         fig.add_annotation(
             x=p["x"]+p["w"]/2, y=p["y"]+p["h"]/2 + 9,
             text=comp.get("zone","").split()[0], showarrow=False,
-            font=dict(size=8, color=text_col+"88" if is_hot else "#4a5568",
+            font=dict(size=8, color=text_col if is_hot else "#4a5568",
                      family="JetBrains Mono, monospace"),
             xanchor="center", yanchor="middle")
 
@@ -848,7 +848,7 @@ def render_step_why(ws):
                 font-weight:900;margin-bottom:4px'>$80–$960</div>
             <div style='font-size:11px;color:var(--muted);margin-bottom:8px'>1× baseline</div>
             <div style='font-size:12px;color:var(--sub)'>Cheapest — catch it in a diagram before a line of code is written</div>
-            """, "#66bb6a33"), unsafe_allow_html=True)
+            """, "rgba(102,187,106,0.2)"), unsafe_allow_html=True)
         with c2:
             st.markdown(card_html("""
             <div style='font-size:10px;color:#ffa726;font-family:JetBrains Mono,monospace;
@@ -858,7 +858,7 @@ def render_step_why(ws):
                 font-weight:900;margin-bottom:4px'>$7.6K–$15K</div>
             <div style='font-size:11px;color:var(--muted);margin-bottom:8px'>10–15× baseline</div>
             <div style='font-size:12px;color:var(--sub)'>Code already written and tested — expensive to refactor</div>
-            """, "#ffa72633"), unsafe_allow_html=True)
+            """, "rgba(255,167,38,0.2)"), unsafe_allow_html=True)
         with c3:
             st.markdown(card_html("""
             <div style='font-size:10px;color:#ef5350;font-family:JetBrains Mono,monospace;
@@ -868,7 +868,7 @@ def render_step_why(ws):
                 font-weight:900;margin-bottom:4px'>Up to $93K</div>
             <div style='font-size:11px;color:var(--muted);margin-bottom:8px'>100× baseline</div>
             <div style='font-size:12px;color:var(--sub)'>Customers affected, patches required, regulatory notification</div>
-            """, "#ef535033"), unsafe_allow_html=True)
+            """, "rgba(239,83,80,0.2)"), unsafe_allow_html=True)
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         alert("Every hour spent in a threat modeling session saves an estimated <strong>10–100 hours</strong> of post-release remediation. Threat modeling is not a security activity — it is a <strong>cost reduction activity.</strong>", "info")
         if st.button("THE METHOD ▶"):
@@ -996,7 +996,7 @@ def render_step_s101(ws):
         c = stride_color(r["letter"])
         done = i in passed
         active = i == idx
-        bg = f"{c}22" if active else ("#66bb6a18" if done else "var(--raised)")
+        bg = f"{c}22" if active else ("rgba(102,187,106,0.09)" if done else "var(--raised)")
         bc = c if active else ("#66bb6a" if done else "var(--border)")
         prog_html += f'<div style="width:32px;height:32px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-family:JetBrains Mono,monospace;font-size:14px;font-weight:900;background:{bg};border:2px solid {bc};color:{"#66bb6a" if done and not active else c if active else "var(--muted)"}">{"✓" if done and not active else r["letter"]}</div>'
     prog_html += f'<div style="margin-left:auto;font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace">{idx+1}/6 · {len(passed)} passed</div></div>'
@@ -1079,78 +1079,137 @@ def render_step_s101(ws):
 
 def render_step_q1(ws):
     sk = f"ws{ws['id']}_q1"
-    phase = ss(sk+"_phase", "explore")  # explore | quiz
+    phase        = ss(sk+"_phase", "explore")  # explore | quiz
     revealed_comps = ss(sk+"_revealed", set())
-    selected = ss(sk+"_selected", None)
-    quiz_chosen = ss(sk+"_qchosen", None)
-    quiz_revealed = ss(sk+"_qrev", False)
+    selected       = ss(sk+"_selected", None)
+    quiz_chosen    = ss(sk+"_qchosen", None)
+    quiz_revealed  = ss(sk+"_qrev", False)
 
-    comps = ws.get("components", [])
-    assets = ws.get("assets", [])
+    comps       = ws.get("components", [])
+    assets      = ws.get("assets", [])
     assumptions = ws.get("assumptions", [])
+    org_ctx     = ws.get("orgContext", {})
 
+    # ── QUIZ phase ────────────────────────────────────────────────────────────
     if phase == "quiz":
         st.markdown("## SYSTEM COMPREHENSION CHECK")
         alert("Before finding threats, confirm you understand what you're protecting.", "info")
-        # Highest risk component
-        best = max(comps, key=lambda c: c.get("score", 0)) if comps else {"name":"Unknown"}
-        quiz_opts = [c["name"] for c in comps[:4]]
+        best       = max(comps, key=lambda c: c.get("score", 0)) if comps else {"name": "Unknown"}
+        quiz_opts  = [c["name"] for c in comps[:4]]
         correct_idx = quiz_opts.index(best["name"]) if best["name"] in quiz_opts else 0
 
-        st.markdown(f"In **{ws['name']}**, which component represents the **highest-value target** for an attacker — the component whose compromise would have the greatest impact?")
+        st.markdown(
+            f"In **{ws['name']}**, which component represents the "
+            f"**highest-value target** for an attacker — the component whose "
+            f"compromise would have the greatest impact?"
+        )
         if not quiz_revealed:
             for i, opt in enumerate(quiz_opts):
-                if st.button(f"{chr(65+i)}. {opt}", key=sk+f"_qopt{i}", use_container_width=True):
+                if st.button(f"{chr(65+i)}. {opt}", key=sk+f"_qopt{i}",
+                             use_container_width=True):
                     set_ss(sk+"_qchosen", i)
-                    set_ss(sk+"_qrev", True); st.rerun()
+                    set_ss(sk+"_qrev", True)
+                    st.rerun()
         else:
             for i, opt in enumerate(quiz_opts):
-                if i == correct_idx: st.success(f"✓ {opt}")
+                if i == correct_idx:   st.success(f"✓ {opt}")
                 elif i == quiz_chosen: st.error(f"✗ {opt}")
-                else: st.markdown(f"&nbsp;&nbsp;{chr(65+i)}. {opt}")
-            zcol = zone_color(best.get("zone",""))
+                else:                  st.markdown(f"&nbsp;&nbsp;{chr(65+i)}. {opt}")
             if quiz_chosen == correct_idx:
-                alert(f"✓ Correct! <strong>{best['name']}</strong> sits in the {best.get('zone','')} zone and stores/processes the most sensitive data.", "success")
+                alert(
+                    f"✓ Correct! <strong>{best['name']}</strong> sits in the "
+                    f"{best.get('zone','')} zone and holds the most sensitive data. "
+                    f"In Q2 you will find threats targeting exactly this component.",
+                    "success"
+                )
             else:
-                alert(f"✗ Correct answer: <strong>{best['name']}</strong> — it sits in the {best.get('zone','')} zone (score {best.get('score',0)}). Highest zone score = highest-value target.", "warn")
+                alert(
+                    f"✗ Correct answer: <strong>{best['name']}</strong> — zone: "
+                    f"{best.get('zone','')} · trust score: {best.get('score',0)}. "
+                    f"Higher zone score = more sensitive = primary attack target.",
+                    "warn"
+                )
 
         c1, c2 = st.columns(2)
         with c1:
             if st.button("← BACK TO SYSTEM", key=sk+"_back"):
-                set_ss(sk+"_phase","explore"); st.rerun()
+                set_ss(sk+"_phase", "explore"); st.rerun()
         with c2:
-            if quiz_revealed and st.button("Q2: ZONE LABELS ▶", key=sk+"_next"):
-                set_ss("current_step","q2zones"); st.rerun()
+            if quiz_revealed:
+                if st.button("Q2: ZONE LABELS ▶", key=sk+"_next"):
+                    set_ss("current_step", "q2zones"); st.rerun()
         return
 
-    st.markdown("## WHAT ARE WE WORKING ON?")
-    st.caption(f"Click each component to discover its role — {len(revealed_comps)}/{min(len(comps),4)} explored")
+    # ── EXPLORE phase ─────────────────────────────────────────────────────────
+    st.markdown("## Q1 — WHAT ARE WE WORKING ON?")
 
-    col_l, col_r = st.columns([1,1])
+    # System description card
+    if org_ctx.get("background"):
+        st.markdown(
+            f"""<div style='padding:14px 18px;background:var(--card);border-radius:8px;
+                border:1px solid rgba(0,229,255,0.2);border-left:4px solid #00e5ff;
+                margin-bottom:14px'>
+                <div style='font-size:9px;font-weight:700;color:#00e5ff;
+                    font-family:JetBrains Mono,monospace;text-transform:uppercase;
+                    letter-spacing:1.5px;margin-bottom:6px'>System Overview — {ws["name"]}</div>
+                <p style='font-size:13px;color:var(--sub);line-height:1.8;margin:0'>
+                    {org_ctx["background"]}</p>
+            </div>""",
+            unsafe_allow_html=True
+        )
+
+    # Architecture diagram — always visible in Q1
+    st.markdown("**Architecture — study the components and trust zones before exploring**")
+    render_architecture(ws, key=sk+"_q1_arch")
+
+    st.markdown(
+        f"**Click each component to discover its role — "
+        f"{len(revealed_comps)}/{min(len(comps), 4)} explored**"
+    )
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    col_l, col_r = st.columns([1, 1])
+
     with col_l:
-        st.markdown("**System Components — click to explore**")
+        st.markdown("**Components**")
         for comp in comps:
-            zcol = zone_color(comp.get("zone",""))
-            is_sel = selected == comp["name"]
+            zcol   = zone_color(comp.get("zone", ""))
+            is_sel  = selected == comp["name"]
             is_seen = comp["name"] in revealed_comps
-            border = f"1.5px solid {zcol}" if is_sel or is_seen else "1px solid var(--border)"
-            bg = f"rgba({','.join(str(int(zcol[i:i+2],16)) for i in (1,3,5))},0.12)" if is_sel else \
-                 "var(--card)" if is_seen else "var(--raised)"
             if st.button(
                 f"{'✓ ' if is_seen else '→ '}{comp['name']} [{comp.get('zone','').split()[0]}]",
-                key=sk+f"_comp_{comp['name']}", use_container_width=True
+                key=sk+f"_comp_{comp['name']}",
+                use_container_width=True
             ):
-                new_rev = revealed_comps | {comp["name"]}
-                set_ss(sk+"_revealed", new_rev)
-                set_ss(sk+"_selected", comp["name"]); st.rerun()
+                set_ss(sk+"_revealed", revealed_comps | {comp["name"]})
+                set_ss(sk+"_selected", comp["name"])
+                st.rerun()
+
+        # Data flows summary
+        flows = ws.get("flows", [])
+        if flows:
+            st.markdown("**Data Flows**")
+            for f in flows[:6]:
+                zcol_src = zone_color(
+                    next((c.get("zone","") for c in comps if c["name"]==f["src"]), ""))
+                zcol_dst = zone_color(
+                    next((c.get("zone","") for c in comps if c["name"]==f["dst"]), ""))
+                st.markdown(
+                    f'<div style="font-size:11px;color:var(--sub);padding:3px 0;'
+                    f'font-family:JetBrains Mono,monospace">'
+                    f'<span style="color:{zcol_src}">{f["src"]}</span>'
+                    f' → <span style="color:{zcol_dst}">{f["dst"]}</span>'
+                    f'<span style="color:var(--muted)"> ({f.get("data","")[:28]})</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
     with col_r:
-        sel_comp = next((c for c in comps if c["name"]==selected), None)
+        sel_comp = next((c for c in comps if c["name"] == selected), None)
         if sel_comp:
-            zcol = zone_color(sel_comp.get("zone",""))
-            zone = sel_comp.get("zone","")
+            zcol  = zone_color(sel_comp.get("zone", ""))
             score = sel_comp.get("score", 0)
-            if zone.startswith("Not") or score == 0:
+            if score == 0:
                 trust_msg = "Never trusted. All inputs validated. Every request potentially hostile."
             elif score >= 7:
                 trust_msg = "Highest-value target. Compromise = full data breach."
@@ -1158,60 +1217,135 @@ def render_step_q1(ws):
                 trust_msg = "Privileged component. Strict access controls required."
             else:
                 trust_msg = "Standard trust. Parameterised queries and output encoding required."
-            st.markdown(f"""<div style='padding:16px;background:var(--card);border-radius:8px;
-                border:1.5px solid {zcol}'>
-                <div style='display:flex;gap:10px;align-items:center;margin-bottom:12px'>
-                    <div style='width:10px;height:10px;border-radius:5px;background:{zcol};flex-shrink:0'></div>
-                    <div style='font-weight:700;color:var(--text);font-size:14px'>{sel_comp["name"]}</div>
-                    {tag(zone, zcol)}
-                </div>
-                <p style='font-size:12.5px;color:var(--sub);line-height:1.7;margin-bottom:10px'>{sel_comp.get("desc","")}</p>
-                <div style='padding:8px 10px;background:{zcol}10;border-radius:5px;border:1px solid {zcol}22'>
-                    <div style='font-size:9px;font-weight:700;color:{zcol};font-family:JetBrains Mono,monospace;
-                        text-transform:uppercase;letter-spacing:1.5px;margin-bottom:3px'>Trust implication</div>
-                    <div style='font-size:11.5px;color:var(--sub);line-height:1.6'>{trust_msg}</div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-        else:
-            st.markdown("""<div style='padding:40px;text-align:center;background:var(--raised);
-                border-radius:8px;border:1px dashed var(--border)'>
-                <div style='font-size:12px;color:var(--muted);font-family:JetBrains Mono,monospace'>
-                    ← Click a component to see its role, trust zone, and threat implications
-                </div>
-            </div>""", unsafe_allow_html=True)
 
+            # Derive STRIDE categories for this component
+            stride_map = {
+                0: ["S","D"],
+                1: ["S","T","D"],
+                3: ["S","T","R","I","D"],
+                5: ["S","T","R","I","D","E"],
+                7: ["S","T","R","I","D","E"],
+            }
+            letters = stride_map.get(score, ["S","T"])
+            if score >= 5:
+                letters = ["S","T","R","I","D","E"]
+
+            st.markdown(
+                f"""<div style='padding:16px;background:var(--card);border-radius:8px;
+                    border:1.5px solid {zcol};margin-bottom:10px'>
+                    <div style='display:flex;gap:10px;align-items:center;margin-bottom:10px'>
+                        <div style='width:10px;height:10px;border-radius:5px;
+                            background:{zcol};flex-shrink:0'></div>
+                        <strong style='color:var(--text);font-size:14px'>{sel_comp["name"]}</strong>
+                        {tag(sel_comp.get("zone",""), zcol)}
+                    </div>
+                    <p style='font-size:12.5px;color:var(--sub);line-height:1.7;
+                        margin-bottom:10px'>{sel_comp.get("desc","")}</p>
+                    <div style='padding:8px 10px;background:rgba(0,0,0,0.2);
+                        border-radius:5px;border:1px solid {zcol}22;margin-bottom:10px'>
+                        <div style='font-size:9px;font-weight:700;color:{zcol};
+                            font-family:JetBrains Mono,monospace;text-transform:uppercase;
+                            letter-spacing:1.5px;margin-bottom:3px'>Trust implication</div>
+                        <div style='font-size:11.5px;color:var(--sub);
+                            line-height:1.6'>{trust_msg}</div>
+                    </div>
+                    <div style='font-size:9px;font-weight:700;color:var(--muted);
+                        font-family:JetBrains Mono,monospace;text-transform:uppercase;
+                        letter-spacing:1.5px;margin-bottom:6px'>STRIDE categories that apply</div>
+                    <div style='display:flex;gap:6px;flex-wrap:wrap'>""" +
+                "".join(
+                    f'<span style="width:22px;height:22px;border-radius:4px;'
+                    f'background:{stride_color(l)}22;border:1px solid {stride_color(l)};'
+                    f'display:inline-flex;align-items:center;justify-content:center;'
+                    f'font-family:JetBrains Mono,monospace;font-size:11px;font-weight:900;'
+                    f'color:{stride_color(l)}">{l}</span>'
+                    for l in letters
+                ) +
+                """    </div>
+                </div>""",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                """<div style='padding:32px;text-align:center;background:var(--raised);
+                    border-radius:8px;border:1px dashed var(--border)'>
+                    <div style='font-size:24px;margin-bottom:8px'>←</div>
+                    <div style='font-size:12px;color:var(--muted);
+                        font-family:JetBrains Mono,monospace'>
+                        Click a component to see its role, trust zone,
+                        and which STRIDE categories apply
+                    </div>
+                </div>""",
+                unsafe_allow_html=True
+            )
+
+        # Assets panel
         if assets:
             st.markdown("**Key Assets**")
-            for a in assets[:3]:
-                col_s = "#ef5350" if a.get("sensitivity")=="Critical" else "#ffa726" if a.get("sensitivity")=="High" else "#5c6bc0"
-                st.markdown(f"""<div style='display:flex;gap:8px;padding:5px 0;
-                    border-bottom:1px solid var(--border)44'>
-                    <div style='width:6px;height:6px;border-radius:3px;background:{col_s};
-                        flex-shrink:0;margin-top:5px'></div>
-                    <div>
-                        <div style='font-size:11.5px;font-weight:700;color:var(--text)'>{a["name"]}</div>
-                        <div style='font-size:10px;color:var(--muted);font-family:JetBrains Mono,monospace'>{a.get("sensitivity","")}</div>
-                    </div>
-                </div>""", unsafe_allow_html=True)
+            for a in assets[:4]:
+                sens = a.get("sensitivity", "")
+                col_s = ("#ef5350" if sens == "Critical" else
+                         "#ffa726" if sens == "High" else "#5c6bc0")
+                st.markdown(
+                    f"""<div style='display:flex;gap:8px;padding:6px 0;
+                        border-bottom:1px solid rgba(30,45,66,0.6)'>
+                        <div style='width:6px;height:6px;border-radius:3px;background:{col_s};
+                            flex-shrink:0;margin-top:5px'></div>
+                        <div>
+                            <div style='font-size:11.5px;font-weight:700;
+                                color:var(--text)'>{a["name"]}</div>
+                            <div style='font-size:10px;color:{col_s};
+                                font-family:JetBrains Mono,monospace'>{sens}</div>
+                            <div style='font-size:10.5px;color:var(--muted);
+                                line-height:1.5'>{a.get("why","")[:80]}</div>
+                        </div>
+                    </div>""",
+                    unsafe_allow_html=True
+                )
 
+    # Assumptions
     if assumptions:
-        st.markdown("**Key Assumptions** *(these become threats if wrong)*")
+        st.markdown("**Key Assumptions** *(these become threats if any are wrong)*")
         cols_a = st.columns(2)
-        for i, a in enumerate(assumptions[:4]):
-            with cols_a[i%2]:
-                st.markdown(f"⚡ {a}")
+        for i, a in enumerate(assumptions[:6]):
+            with cols_a[i % 2]:
+                st.markdown(
+                    f'<div style="font-size:12px;color:var(--sub);padding:4px 0;'
+                    f'display:flex;gap:6px"><span style="color:#ffa726;flex-shrink:0">⚡</span>'
+                    f'{a}</div>',
+                    unsafe_allow_html=True
+                )
+
+    # Threat actors
+    actors = org_ctx.get("threat_actors", [])
+    if actors:
+        st.markdown("**Threat Actors**")
+        cols_b = st.columns(3)
+        for i, actor in enumerate(actors[:6]):
+            with cols_b[i % 3]:
+                st.markdown(
+                    f'<div style="font-size:11px;color:var(--sub);padding:4px 8px;'
+                    f'background:rgba(239,83,80,0.07);border-radius:4px;margin-bottom:4px;'
+                    f'border:1px solid rgba(239,83,80,0.2)">'
+                    f'<span style="color:#ef5350">☠ </span>{actor}</div>',
+                    unsafe_allow_html=True
+                )
 
     can_proceed = len(revealed_comps) >= min(len(comps), 4)
     c1, c2 = st.columns(2)
     with c1:
         if st.button("← STRIDE 101", key=sk+"_back"):
-            set_ss("current_step","s101"); st.rerun()
+            set_ss("current_step", "s101"); st.rerun()
     with c2:
         if can_proceed:
             if st.button("CHECK UNDERSTANDING ▶", key=sk+"_quiz"):
-                set_ss(sk+"_phase","quiz"); st.rerun()
+                set_ss(sk+"_phase", "quiz"); st.rerun()
         else:
-            st.caption(f"Explore {min(len(comps),4)-len(revealed_comps)} more components to continue")
+            remaining = min(len(comps), 4) - len(revealed_comps)
+            st.caption(
+                f"Explore {remaining} more "
+                f"component{'s' if remaining != 1 else ''} to continue"
+            )
 
 
 def render_step_q2zones(ws):
@@ -1720,7 +1854,7 @@ def render_step_q2tree(ws):
             has_mit   = any(m.get("step")==step["id"] for m in path.get("mitigations",[]))
             is_blocked = sim_phase == "mitigated" and has_mit
             sc2 = stride_color(step.get("strideType","S")[:1])
-            bg = "#66bb6a18" if is_blocked else "#ef535018" if is_active else "var(--raised)"
+            bg = "rgba(102,187,106,0.09)" if is_blocked else "rgba(239,83,80,0.09)" if is_active else "var(--raised)"
             bc = "#66bb6a" if is_blocked else "#ef5350" if is_active else "var(--border)"
             rt_pos = rt_sequence.index(step["id"]) if step["id"] in rt_sequence else -1
 
