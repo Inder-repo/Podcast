@@ -224,6 +224,9 @@ def init_session_state():
         'show_unlock_form': {},
         'annotations': {},          # {workshop_id: [label dicts]}
         'annot_nonce': 0,
+        'scope_models': {},         # {workshop_id: scope / assumptions / exclusions}
+        'open_questions': {},       # {workshop_id: {questions, accepted}}
+        'review_plans': {},         # {workshop_id: review cadence + triggers}
         # NEW: Zone of Trust labelling state per workshop
         'zone_labels': {},          # {component: criticality_label}
         'zone_scores': {},          # {component: 0-9 score}
@@ -258,6 +261,11 @@ def start_workshop(ws_id):
     st.session_state.owasp_mapping_answers = {}
     st.session_state.owasp_mapping_submitted = False
     st.session_state.annotations[ws_id] = []
+    st.session_state.scope_models[ws_id] = {}
+    st.session_state.open_questions[ws_id] = {}
+    st.session_state.review_plans[ws_id] = {}
+    for k in [k for k in st.session_state.keys() if str(k).startswith(("w_", "_seed_", "ed_"))]:
+        del st.session_state[k]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1584,7 +1592,7 @@ ANNOTATION_KINDS = {
 }
 _KIND_ORDER = ["actor", "asset", "threat", "control"]
 _NODE_W, _NODE_H, _DS_H = 140, 56, 62
-_ROW_H, _TOP, _LEG_H = 112, 72, 64
+_ROW_H, _TOP, _LEG_H = 112, 72, 84
 _FONT = "'DM Sans','Segoe UI',Helvetica,Arial,sans-serif"
 _MONO = "'DM Mono',Consolas,'Courier New',monospace"
 
@@ -1697,7 +1705,8 @@ def _item_tip(it):
     return tip
 
 
-def render_architecture_svg(workshop_config, highlighted_threats=None, mode="architecture", annotations=None):
+def render_architecture_svg(workshop_config, highlighted_threats=None, mode="architecture", annotations=None,
+                            out_of_scope=(), risk_map=None, ctrl_map=None):
     """
     Swimlane architecture / DFD diagram.
       columns  = External | DMZ | Internal Services | Third-Party (dotted dividers)
@@ -1708,6 +1717,10 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
     """
     highlighted_threats = highlighted_threats or []
     annotations = annotations or []
+    oos = set(out_of_scope or ())
+    risk_map = risk_map or {}
+    ctrl_map = ctrl_map or {}
+    heat = mode in ("scoring", "controls", "residual")
     scenario = workshop_config["scenario"]
     components, flows = scenario["components"], scenario["data_flows"]
     comp_by_name = {c["name"]: c for c in components}
@@ -1746,11 +1759,16 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
 <marker id="mk-n" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1,1 L8,4.5 L1,8 Z" fill="#546E7A"/></marker>
 <marker id="mk-r" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1,1 L8,4.5 L1,8 Z" fill="#C62828"/></marker>
 <marker id="mk-b" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1,1 L8,4.5 L1,8 Z" fill="#5C6BC0"/></marker>
+<marker id="mk-a" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1,1 L8,4.5 L1,8 Z" fill="#E69500"/></marker>
+<marker id="mk-g" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1,1 L8,4.5 L1,8 Z" fill="#2E7D32"/></marker>
+<marker id="mk-o" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1,1 L8,4.5 L1,8 Z" fill="#B0BEC5"/></marker>
 <filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="1.5" stdDeviation="2" flood-color="#000" flood-opacity="0.16"/></filter>
 </defs>""")
 
     mode_lbl = {"architecture": "Architecture overview", "stride": "STRIDE flow annotations",
-                "threat": "Threat impact map", "zones": "Zones of trust"}.get(mode, "")
+                "threat": "Threat impact map", "zones": "Zones of trust", "scope": "Scope view: in scope vs out of scope",
+                "scoring": "Inherent risk heat map (impact × likelihood)", "controls": "Controls applied to risks",
+                "residual": "Residual risk heat map (after controls)"}.get(mode, "")
     s.append(f'<text x="14" y="21" class="t-title">{_xml(scenario.get("title", "System architecture"))}</text>')
     s.append(f'<text x="{W - 14}" y="21" text-anchor="end" class="t-mode">{_xml(mode_lbl)}</text>')
 
@@ -1795,6 +1813,15 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
         mk = "mk-r" if is_thr else ("mk-b" if tags else "mk-n")
         sw = 2.6 if is_thr else 1.7
         dash = ' stroke-dasharray="6,3"' if (tags and not is_thr) else ""
+        xb = []
+        if heat and key in risk_map:
+            band = risk_band(risk_map[key])
+            col, mk, sw = BAND_COLORS[band][1], {"High": "mk-r", "Medium": "mk-a", "Low": "mk-g"}[band], 3
+            xb.append(("risk", (f"R{risk_map[key]}", band), 30))
+            if mode == "controls" and ctrl_map.get(key):
+                xb.append(("ctl", ctrl_map[key], 30))
+        if src in oos or dst in oos:
+            col, mk, sw, dash = "#B0BEC5", "mk-o", 1.3, ' stroke-dasharray="3,4"'
         t1, t2 = comp_by_name[src].get("type"), comp_by_name[dst].get("type")
         vert, side = False, 0
 
@@ -1825,7 +1852,7 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
         data = (f.get("data", "") or "")
         proto = f.get("protocol", "")
         tip = f"{key} · {data}" + (f" · {proto}" if proto else "")
-        labels.append((key, lx, ly, data, tip, col, tags, vert, side))
+        labels.append((key, lx, ly, data, tip, col, tags, vert, side, xb))
         anchors.setdefault(key, (lx, ly, data))
 
     # nodes
@@ -1843,23 +1870,41 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
         fill = "#FFCDD2" if is_thr else (zs["band"] if mode == "zones" else "white")
         stroke = "#C62828" if is_thr else (zs["stroke"] if mode == "zones" else "#263238")
         swn = 3 if is_thr else 1.8
+        in_oos = name in oos
+        r_here = risk_map.get(name) if heat else None
+        if r_here:
+            fill, stroke, swn = BAND_COLORS[risk_band(r_here)][0], BAND_COLORS[risk_band(r_here)][1], 3
+        if in_oos:
+            fill, stroke, swn = "#ECEFF1", "#90A4AE", 1.5
+        sd = ' stroke-dasharray="5,3"' if in_oos else ""
+        tstyle = ' style="fill:#90A4AE"' if in_oos else ""
         tip = f"<title>{_xml(name)} — {_xml(comp.get('description', ''))} · {_xml(zone)} (Z{comp.get('zone_score', 0)})</title>"
         if ctype == "external_entity":
-            s.append(f'<g filter="url(#sh)">{tip}<ellipse cx="{cx}" cy="{cy}" rx="{HW}" ry="{h / 2}" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"/></g>')
+            s.append(f'<g filter="url(#sh)">{tip}<ellipse cx="{cx}" cy="{cy}" rx="{HW}" ry="{h / 2}" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"{sd}/></g>')
         elif ctype == "datastore":
             cap = 9
             body = (f'M{x0},{y0 + cap} L{x0},{y0 + h - cap} A{HW},{cap} 0 0 0 {x0 + _NODE_W},{y0 + h - cap} '
                     f'L{x0 + _NODE_W},{y0 + cap} Z')
-            s.append(f'<g filter="url(#sh)">{tip}<path d="{body}" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"/>'
-                     f'<ellipse cx="{cx}" cy="{y0 + cap}" rx="{HW}" ry="{cap}" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"/></g>')
+            s.append(f'<g filter="url(#sh)">{tip}<path d="{body}" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"{sd}/>'
+                     f'<ellipse cx="{cx}" cy="{y0 + cap}" rx="{HW}" ry="{cap}" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"{sd}/></g>')
         else:
-            s.append(f'<g filter="url(#sh)">{tip}<rect x="{x0}" y="{y0}" width="{_NODE_W}" height="{h}" rx="9" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"/></g>')
+            s.append(f'<g filter="url(#sh)">{tip}<rect x="{x0}" y="{y0}" width="{_NODE_W}" height="{h}" rx="9" fill="{fill}" stroke="{stroke}" stroke-width="{swn}"{sd}/></g>')
         desc = zone if mode == "zones" else comp.get("description", "")
         yb = cy + (6 if ctype == "datastore" else 0)
-        s.append(f'<text x="{cx}" y="{yb - 2}" text-anchor="middle" class="t-name">{_xml(_trunc(name, 22))}</text>')
-        s.append(f'<text x="{cx}" y="{yb + 11}" text-anchor="middle" class="t-desc">{_xml(_trunc(desc, 30))}</text>')
+        s.append(f'<text x="{cx}" y="{yb - 2}" text-anchor="middle" class="t-name"{tstyle}>{_xml(_trunc(name, 22))}</text>')
+        s.append(f'<text x="{cx}" y="{yb + 11}" text-anchor="middle" class="t-desc"{tstyle}>{_xml(_trunc(desc, 30))}</text>')
         s.append(f'<rect x="{cx - 16}" y="{cy + h / 2 - 7}" width="32" height="14" rx="7" fill="{zs["stroke"]}"/>'
                  f'<text x="{cx}" y="{cy + h / 2 + 3}" text-anchor="middle" class="t-zone">Z{_xml(comp.get("zone_score", 0))}</text>')
+        if in_oos:
+            s.append(f'<rect x="{x0 + _NODE_W - 78}" y="{y0 - 8}" width="78" height="15" rx="7" fill="#78909C"/>'
+                     f'<text x="{x0 + _NODE_W - 39}" y="{y0 + 2.5}" text-anchor="middle" class="t-zone">OUT OF SCOPE</text>')
+        if r_here:
+            rf, rs = BAND_COLORS[risk_band(r_here)]
+            s.append(f'<g><title>Risk score {r_here} ({risk_band(r_here)})</title><rect x="{x0 + _NODE_W - 30}" y="{y0 - 9}" width="34" height="18" rx="7" fill="{rs}"/>'
+                     f'<text x="{x0 + _NODE_W - 13}" y="{y0 + 3.5}" text-anchor="middle" class="t-zone">R{r_here}</text></g>')
+            if mode == "controls" and ctrl_map.get(name):
+                s.append(f'<g><title>{ctrl_map[name]} control(s) selected</title><rect x="{x0 + _NODE_W - 66}" y="{y0 - 9}" width="32" height="18" rx="7" fill="#2E7D32"/>'
+                         f'<text x="{x0 + _NODE_W - 50}" y="{y0 + 3.5}" text-anchor="middle" class="t-zone">C×{ctrl_map[name]}</text></g>')
         if is_thr:
             s.append(f'<circle cx="{x0 + _NODE_W}" cy="{y0}" r="9" fill="#C62828"/>'
                      f'<text x="{x0 + _NODE_W}" y="{y0 + 4}" text-anchor="middle" font-family="Arial" font-size="12" font-weight="700" fill="white">!</text>')
@@ -1884,12 +1929,12 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
     def _free(box):
         return not any(box[0] < q[2] + 3 and box[2] > q[0] - 3 and box[1] < q[3] + 3 and box[3] > q[1] - 3 for q in placed)
 
-    for key, lx, ly, data, tip, col, tags, vert, side in sorted(labels, key=lambda x: not x[7]):   # vertical flows first
+    for key, lx, ly, data, tip, col, tags, vert, side, xb in sorted(labels, key=lambda x: not x[7]):   # vertical flows first
         txt = _trunc(data, 22)
         lw = len(txt) * 5.2 + 12 if txt else 0
         if vert and side:
             lx = lx + side * (lw / 2 + 7)      # parallel vertical flows: label sits beside its own line
-        extras = [("chip", tg, 16) for tg in tags]
+        extras = [("chip", tg, 16) for tg in tags] + list(xb)
         if key not in done_keys:               # learner labels go on the first flow with this key
             done_keys.add(key)
             for it in sorted(by_target.get(key, []), key=_ann_sort):
@@ -1914,7 +1959,14 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
                      f'<text x="{lx:.1f}" y="{ly + 1:.1f}" text-anchor="middle" class="t-edge" fill="{col}">{_xml(txt)}</text></g>')
         bx, by = ex0, ly + ey
         for typ, obj, w in extras:
-            if typ == "chip":
+            if typ == "risk":
+                rf, rs = BAND_COLORS[risk_band(int(obj[0][1:]))]
+                s.append(f'<g><title>Risk score {obj[0][1:]} ({obj[1]})</title><rect x="{bx:.1f}" y="{by - 8:.1f}" width="30" height="16" rx="6" fill="{rs}"/>'
+                         f'<text x="{bx + 15:.1f}" y="{by + 3.5:.1f}" text-anchor="middle" class="t-zone">{obj[0]}</text></g>')
+            elif typ == "ctl":
+                s.append(f'<g><title>{obj} control(s) selected</title><rect x="{bx:.1f}" y="{by - 8:.1f}" width="30" height="16" rx="6" fill="#2E7D32"/>'
+                         f'<text x="{bx + 15:.1f}" y="{by + 3.5:.1f}" text-anchor="middle" class="t-zone">C×{obj}</text></g>')
+            elif typ == "chip":
                 tc = _STRIDE_TAG_COLOR.get(obj, "#555")
                 s.append(f'<g><title>{_xml(_STRIDE_TAG_TIP.get(obj, ""))}</title><rect x="{bx:.1f}" y="{by - 8:.1f}" width="16" height="16" rx="4" fill="{tc}"/>'
                          f'<text x="{bx + 8:.1f}" y="{by + 3.5:.1f}" text-anchor="middle" class="t-badge" fill="white">{obj}</text></g>')
@@ -1940,6 +1992,15 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
     def ic_chip(tg):
         return lambda x, y: (f'<rect x="{x}" y="{y - 8}" width="16" height="16" rx="4" fill="{_STRIDE_TAG_COLOR[tg]}"/><text x="{x + 8}" y="{y + 3.5}" text-anchor="middle" class="t-badge" fill="white">{tg}</text>', 16)
 
+    def ic_oos(x, y):
+        return f'<rect x="{x}" y="{y - 6}" width="22" height="12" rx="5" fill="#ECEFF1" stroke="#90A4AE" stroke-dasharray="3,2"/>', 22
+
+    def ic_risk(band):
+        return lambda x, y: (f'<rect x="{x}" y="{y - 7}" width="22" height="14" rx="6" fill="{BAND_COLORS[band][1]}"/>', 22)
+
+    def ic_ctl(x, y):
+        return f'<rect x="{x}" y="{y - 7}" width="26" height="14" rx="6" fill="#2E7D32"/><text x="{x + 13}" y="{y + 3}" text-anchor="middle" class="t-zone">C×n</text>', 26
+
     items = [(ic_ellipse, "External entity"), (ic_rect, "Process"), (ic_cyl, "Data store"),
              (ic_zone, "Criticality zone (0–9)"),
              (ic_badge("actor", "TA1"), "Threat actor"), (ic_badge("asset", "AS1"), "Asset"),
@@ -1948,6 +2009,12 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
         items += [(ic_chip("T"), "Tampering"), (ic_chip("I"), "Info disclosure"), (ic_chip("D"), "DoS")]
     if threat_nodes or threat_flows:
         items.append((ic_bang, "Threat identified"))
+    if oos:
+        items.append((ic_oos, "Out of scope"))
+    if heat:
+        items += [(ic_risk("Low"), "Low risk (1–2)"), (ic_risk("Medium"), "Medium (3–4)"), (ic_risk("High"), "High (6–9)")]
+    if mode == "controls":
+        items.append((ic_ctl, "Controls selected"))
     lx_, ly_ = 14, ly0 + 34
     for fn, text in items:
         w_item = 30 + len(text) * 5.1
@@ -1985,7 +2052,7 @@ def annotation_register_df(items, include_scenario_links=True):
     return pd.DataFrame(rows, columns=["ID", "Type", "Label", "Attached to", "Linked to", "Notes"])
 
 
-def diagram_label_editor(workshop_config, key):
+def diagram_label_editor(workshop_config, key, default_kind=None):
     """Expander that lets the learner add / remove labels on the diagram of the current workshop."""
     ws_id = st.session_state.selected_workshop
     items = get_annotations(ws_id)
@@ -1999,6 +2066,7 @@ def diagram_label_editor(workshop_config, key):
                    "link threat scenarios to actors/assets, and link controls to the scenarios they mitigate.")
         c1, c2 = st.columns([1, 2])
         kind = c1.selectbox("Label type", _KIND_ORDER, key=f"{key}_kind",
+                            index=_KIND_ORDER.index(default_kind) if default_kind in _KIND_ORDER else 0,
                             format_func=lambda k: f"{ANNOTATION_KINDS[k]['icon']} {ANNOTATION_KINDS[k]['title']}")
         target = c2.selectbox("Attach to (component or data flow)", targets, key=f"{key}_target_{nonce}")
 
@@ -2055,16 +2123,35 @@ def diagram_label_editor(workshop_config, key):
                 st.rerun()
 
 
-def show_architecture_diagram(workshop_config, threats=None, mode="architecture", key_suffix="", editable=False):
+def _risk_maps(mode):
+    risk, ctrl = {}, {}
+    for r in st.session_state.user_answers:
+        v = rec_residual(r) if mode == "residual" else rec_risk(r)
+        if not v:
+            continue
+        risk[r["component"]] = max(risk.get(r["component"], 0), v)
+        if mode == "controls" and r.get("controlled"):
+            ctrl[r["component"]] = ctrl.get(r["component"], 0) + len(r.get("selected_mitigations", []))
+    return risk, ctrl
+
+
+def show_architecture_diagram(workshop_config, threats=None, mode="architecture", key_suffix="", editable=False, default_kind=None):
     captions = {
         "architecture": "Architecture overview — columns = where the component lives · Z-chip = criticality zone · hover any shape or badge for details",
         "stride":       "STRIDE flow annotations — chips on flows: T = Tampering (low→high zone) · I = Info disclosure (high→low) · D = DoS (Zone-0 source)",
         "threat":       "Threat map — components and flows with identified threats are shown in red",
         "zones":        "Zones of trust — shape colour = criticality zone of each component",
+        "scope":        "Scope view — grey dashed components are OUT of scope (set them in the scope form above); everything else is in scope",
+        "scoring":      "Inherent risk — colour = highest risk score (impact × likelihood) on each component or flow",
+        "controls":     "Controls — colour = inherent risk · C×n = number of controls you selected for that component or flow",
+        "residual":     "Residual risk — colour = risk that remains after your controls",
     }
     ws_id = st.session_state.selected_workshop
     items = get_annotations(ws_id)
-    svg = render_architecture_svg(workshop_config, highlighted_threats=threats or [], mode=mode, annotations=items)
+    oos = get_scope(ws_id)["oos_components"]
+    risk_map, ctrl_map = _risk_maps(mode) if mode in ("scoring", "controls", "residual") else ({}, {})
+    svg = render_architecture_svg(workshop_config, highlighted_threats=threats or [], mode=mode, annotations=items,
+                                  out_of_scope=oos, risk_map=risk_map, ctrl_map=ctrl_map)
     if mode in captions:
         st.caption("📐 " + captions[mode])
     est_h = _TOP + max(1, max(len([1 for c in workshop_config["scenario"]["components"] if _lane_of(c) == l])
@@ -2075,7 +2162,7 @@ def show_architecture_diagram(workshop_config, threats=None, mode="architecture"
     st.download_button("⬇️ Download diagram (SVG)", svg, file_name=f"workshop{ws_id}_{mode}.svg",
                        mime="image/svg+xml", key=f"dl_svg_{key_suffix}_{mode}")
     if editable:
-        diagram_label_editor(workshop_config, key=f"ed_{key_suffix}")
+        diagram_label_editor(workshop_config, key=f"ed_{key_suffix}", default_kind=default_kind)
         if items:
             st.markdown("**Label register**")
             st.dataframe(annotation_register_df(items), hide_index=True, use_container_width=True)
@@ -2137,51 +2224,6 @@ def generate_attack_tree(tree_json, title="Attack Tree"):
 # ─────────────────────────────────────────────────────────────────────────────
 # SCORING
 # ─────────────────────────────────────────────────────────────────────────────
-def calculate_threat_score(user_threat, predefined_threat):
-    score, max_score, feedback = 0, predefined_threat["points"], []
-
-    if user_threat["component"] == predefined_threat["component"]:
-        score += 2; feedback.append("✓ Correct component identified")
-    else:
-        feedback.append(f"✗ Wrong component. Expected: {predefined_threat['component']}")
-
-    if user_threat["stride"] == predefined_threat["stride"]:
-        score += 2; feedback.append("✓ Correct STRIDE category")
-    else:
-        feedback.append(f"✗ Wrong STRIDE. Expected: {predefined_threat['stride']}")
-
-    if user_threat["likelihood"] == predefined_threat["likelihood"]:
-        score += 1; feedback.append("✓ Correct likelihood")
-    else:
-        feedback.append(f"✗ Likelihood should be: {predefined_threat['likelihood']}")
-
-    if user_threat["impact"] == predefined_threat["impact"]:
-        score += 1; feedback.append("✓ Correct impact")
-    else:
-        feedback.append(f"✗ Impact should be: {predefined_threat['impact']}")
-
-    correct_mits = set(predefined_threat["correct_mitigations"])
-    user_mits = set(user_threat.get("selected_mitigations", []))
-    incorrect_mits = set(predefined_threat.get("incorrect_mitigations", []))
-    correct_selected = user_mits & correct_mits
-    incorrect_selected = user_mits & incorrect_mits
-
-    if len(correct_selected) >= 3:
-        score += 4; feedback.append(f"✓ Excellent mitigation selection ({len(correct_selected)} correct)")
-    elif len(correct_selected) >= 2:
-        score += 3; feedback.append(f"✓ Good mitigation selection ({len(correct_selected)} correct)")
-    elif len(correct_selected) >= 1:
-        score += 2; feedback.append(f"⚠ Partial mitigation selection ({len(correct_selected)} correct)")
-    else:
-        feedback.append("✗ No correct mitigations selected")
-
-    if incorrect_selected:
-        score -= len(incorrect_selected)
-        feedback.append(f"✗ Incorrect mitigations penalty: {', '.join(incorrect_selected)}")
-
-    return max(0, score), max_score, feedback
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # PERSISTENCE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2200,7 +2242,7 @@ def _progress_path():
             sid = uuid.uuid4().hex[:16]
         sid = re.sub(r"[^A-Za-z0-9]", "", str(sid))[:32] or uuid.uuid4().hex[:16]
         st.session_state["_sid"] = sid
-    return os.path.join(tempfile.gettempdir(), f"threat_progress_v2_{sid}.json")
+    return os.path.join(tempfile.gettempdir(), f"threat_progress_v3_{sid}.json")
 
 
 def save_progress():
@@ -2216,6 +2258,9 @@ def save_progress():
                 "total_score": st.session_state.total_score,
                 "max_score": st.session_state.max_score,
                 "annotations": st.session_state.annotations,
+                "scope_models": st.session_state.scope_models,
+                "open_questions": st.session_state.open_questions,
+                "review_plans": st.session_state.review_plans,
             }, f)
     except Exception:
         pass
@@ -2235,12 +2280,15 @@ def load_progress():
             sel = p.get("selected_workshop")
             st.session_state.selected_workshop = sel if sel in WORKSHOPS else None
             step = p.get("current_step", 1)
-            st.session_state.current_step = step if isinstance(step, int) and 1 <= step <= 7 else 1
+            st.session_state.current_step = step if isinstance(step, int) and 1 <= step <= 13 else 1
             st.session_state.threats = p.get("threats", [])
             st.session_state.user_answers = p.get("user_answers", [])
             st.session_state.total_score = p.get("total_score", 0)
             st.session_state.max_score = p.get("max_score", 0)
             st.session_state.annotations = p.get("annotations", {})
+            st.session_state.scope_models = p.get("scope_models", {})
+            st.session_state.open_questions = p.get("open_questions", {})
+            st.session_state.review_plans = p.get("review_plans", {})
     except Exception:
         pass
     st.session_state['_progress_loaded'] = True
@@ -2256,7 +2304,7 @@ def is_workshop_unlocked(ws_id):
 # ─────────────────────────────────────────────────────────────────────────────
 # PDF GENERATORS
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, max_score):
+def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, max_score, extra=None):
     try:
         (letter, getSampleStyleSheet, ParagraphStyle, inch, colors,
          SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table,
@@ -2282,7 +2330,7 @@ def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, m
             ['Report Type:', 'User Submission'],
             ['Workshop Level:', workshop_config['level']],
             ['Architecture:', workshop_config.get('architecture_type', 'N/A')],
-            ['Methodology:', '4-Step Infosec Threat Modeling'],
+            ['Methodology:', '7-Stage Threat Modeling'],
             ['Date:', datetime.now().strftime('%Y-%m-%d %H:%M')],
             ['Score:', f"{total_score}/{max_score} ({final_pct:.1f}%)"]
         ]
@@ -2299,16 +2347,48 @@ def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, m
         story.append(t)
         story.append(PageBreak())
 
-        story.append(Paragraph("4-Step Methodology Applied", h2))
-        steps = [
-            "Step 1: Design – DFD with interactors, modules, and connections",
-            "Step 2: Apply Zones of Trust – Criticality labelling (0–9 scale)",
-            "Step 3: Discover Threats – STRIDE rules based on zone relationships",
-            "Step 4: Explore Mitigations – OWASP Top 10 control mapping"
-        ]
-        for s in steps:
-            story.append(Paragraph(f"• {s}", styles['Normal']))
+        story.append(Paragraph("7-Stage Process Applied", h2))
+        for s_ in ["Stage 1: Scope – system, requirements, assumptions, exclusions, goals",
+                   "Stage 2: DFD – elements, flows, trust boundaries and zones of trust",
+                   "Stage 3: STRIDE – zone-direction rules to derive threats",
+                   "Stage 4: Scoring – impact × likelihood on a 1–3 scale (risk 1–9)",
+                   "Stage 5: Controls – guardrails, filtering, access rules, monitoring (OWASP-mapped)",
+                   "Stage 6: Residual risk – risk after controls, decisions, open questions",
+                   "Stage 7: Review – owner, cadence and update triggers"]:
+            story.append(Paragraph(f"• {s_}", styles['Normal']))
         story.append(Spacer(1, 0.2 * inch))
+
+        def _para(txt, bold=False):
+            txt = _html.escape(str(txt))
+            return Paragraph(f"<b>{txt}</b>" if bold else txt, styles['Normal'])
+
+        def _grid(rows, widths, header=True):
+            tb = Table([[_para(c, header and i == 0) for c in r] for i, r in enumerate(rows)], colWidths=[w * inch for w in widths], repeatRows=1 if header else 0)
+            tb.setStyle(TableStyle([('GRID', (0, 0), (-1, -1), 0.5, colors.grey), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                                    ('BACKGROUND', (0, 0), (-1, 0 if header else -1), colors.HexColor('#E3F2FD')) if header else ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                                    ('LEFTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 3)]))
+            return tb
+
+        ex = extra or {}
+        sc_ = ex.get("scope") or {}
+        if sc_:
+            story.append(Paragraph("Stage 1 – Scope", h2))
+            story.append(_para("System in scope: " + (sc_.get("statement") or "—")))
+            for title_, key_ in (("Must do", "must_do"), ("Must never", "must_never"), ("Measurable goals", "goals")):
+                if sc_.get(key_):
+                    story.append(Spacer(1, 0.05 * inch)); story.append(_para(title_, True))
+                    for x_ in sc_[key_]:
+                        story.append(_para("• " + x_))
+            if sc_.get("assumptions"):
+                story.append(Spacer(1, 0.08 * inch)); story.append(_para("Assumptions", True))
+                story.append(_grid([["Assumption", "How we will verify", "Status"]] + [[a_.get("Assumption", ""), a_.get("How we will verify", ""), a_.get("Status", "")] for a_ in sc_["assumptions"]], [2.6, 2.6, 1.0]))
+            if sc_.get("exclusions") or sc_.get("oos_components"):
+                story.append(Spacer(1, 0.08 * inch)); story.append(_para("Exclusions (out of scope)", True))
+                if sc_.get("exclusions"):
+                    story.append(_grid([["Excluded item", "Reason"]] + [[e_.get("Excluded item", ""), e_.get("Reason", "")] for e_ in sc_["exclusions"]], [3.0, 3.2]))
+                if sc_.get("oos_components"):
+                    story.append(_para("Out-of-scope components: " + ", ".join(sc_["oos_components"])))
+            story.append(Spacer(1, 0.2 * inch))
 
         story.append(Paragraph("Identified Threats", h2))
         for idx, answer in enumerate(user_answers, 1):
@@ -2321,7 +2401,8 @@ def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, m
                 ['STRIDE:', answer['stride']],
                 ['Zone Rule:', pred.get('stride_rule_applied', 'N/A')],
                 ['OWASP:', ', '.join(pred.get('owasp_categories', []))],
-                ['Risk:', f"{answer['likelihood']} likelihood × {answer['impact']} impact"],
+                ['Risk:', (f"{answer['likelihood']} × {answer['impact']} = {rec_risk(answer)}/9 ({risk_band(rec_risk(answer))})" if rec_risk(answer) else "Not rated")
+                          + (f"  →  residual {rec_residual(answer)}/9 ({answer['residual']['decision']})" if rec_residual(answer) else "")],
                 ['Score:', f"{answer['score']}/{answer['max_score']} ({pct:.0f}%)"]
             ]
             rt = Table(row, colWidths=[1.8 * inch, 4.5 * inch])
@@ -2339,8 +2420,38 @@ def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, m
             if answer.get('selected_mitigations'):
                 story.append(Paragraph("<b>Selected Mitigations:</b>", styles['Normal']))
                 for m in answer['selected_mitigations']:
-                    story.append(Paragraph(f"• {m}", styles['Normal']))
+                    story.append(Paragraph(f"• [{control_category(m)}] {_html.escape(m)}", styles['Normal']))
             story.append(Spacer(1, 0.2 * inch))
+
+        rated_ = [a_ for a_ in user_answers if rec_risk(a_)]
+        if rated_:
+            story.append(Paragraph("Stages 4–6 – Risk register (inherent → residual)", h2))
+            story.append(_grid([["Threat", "Component / flow", "STRIDE", "Inherent", "Residual", "Decision"]] +
+                               [[a_["matched_threat_id"], a_["component"], a_["stride"], str(rec_risk(a_)),
+                                 str(rec_residual(a_) or "—"), (a_.get("residual") or {}).get("decision", "—")]
+                                for a_ in sorted(rated_, key=lambda x: -rec_risk(x))], [0.7, 1.9, 1.3, 0.7, 0.7, 1.2]))
+            story.append(Spacer(1, 0.15 * inch))
+        oq_ = ex.get("open_questions") or {}
+        if oq_.get("questions") or oq_.get("accepted"):
+            story.append(Paragraph("Stage 6 – Open questions and accepted risk", h2))
+            for q_ in oq_.get("questions", []):
+                story.append(_para("• " + q_))
+            if oq_.get("accepted"):
+                story.append(Spacer(1, 0.05 * inch)); story.append(_para("Accepted-risk statement: " + oq_["accepted"]))
+        rp_ = ex.get("review_plan") or {}
+        if rp_.get("owner") or rp_.get("full"):
+            story.append(Paragraph("Stage 7 – Review plan", h2))
+            story.append(_para(f"Owner: {rp_.get('owner') or '—'}   |   Security role: {rp_.get('security_role') or '—'}   |   Next lightweight review: {rp_.get('next_review') or '—'}"))
+            for title_, key_ in (("Full-workshop triggers", "full"), ("Lightweight review checks", "light"), ("Update triggers", "triggers")):
+                if rp_.get(key_):
+                    story.append(Spacer(1, 0.05 * inch)); story.append(_para(title_, True))
+                    for x_ in rp_[key_]:
+                        story.append(_para("• " + x_))
+        labs_ = ex.get("labels") or []
+        if labs_:
+            story.append(Paragraph("Diagram labels (actors, assets, threat scenarios, controls)", h2))
+            story.append(_grid([["ID", "Type", "Label", "Attached to"]] + [[l_["id"], ANNOTATION_KINDS[l_["kind"]]["title"], l_["label"], l_["target"]]
+                                                                         for l_ in sorted(labs_, key=_ann_sort)], [0.6, 1.5, 2.7, 1.6]))
 
         doc.build(story)
         buffer.seek(0)
@@ -2457,6 +2568,989 @@ def generate_complete_threat_model_pdf(workshop_config, workshop_id):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  7-STAGE WORKFLOW:  Scope → DFD → STRIDE → Scoring → Controls → Residual risk → Review
+#  Pages (current_step) 1-13 are grouped under these seven stages.
+# ═══════════════════════════════════════════════════════════════════════════════
+import html as _html
+from datetime import date as _date, timedelta as _timedelta
+
+STAGES = [
+    ("scope",    "Scope",         "📐"),
+    ("dfd",      "DFD",           "🗺️"),
+    ("stride",   "STRIDE",        "⚡"),
+    ("scoring",  "Scoring",       "📊"),
+    ("controls", "Controls",      "🛡️"),
+    ("residual", "Residual risk", "⚖️"),
+    ("review",   "Review",        "🔁"),
+]
+STAGE_IDS = [s[0] for s in STAGES]
+PAGES = {
+    1:  ("Scope & goals",       "scope"),
+    2:  ("Draw the DFD",        "dfd"),
+    3:  ("Zones of trust",      "dfd"),
+    4:  ("STRIDE rules",        "stride"),
+    5:  ("Attack tree",         "stride"),
+    6:  ("Identify threats",    "stride"),
+    7:  ("Score the risk",      "scoring"),
+    8:  ("OWASP mapping",       "controls"),
+    9:  ("Select controls",     "controls"),
+    10: ("Residual risk",       "residual"),
+    11: ("Review plan",         "review"),
+    12: ("Assessment & report", "review"),
+    13: ("Complete",            "review"),
+}
+
+
+def _esc(x):
+    return _html.escape(str(x if x is not None else ""))
+
+
+def go_page(page):
+    st.session_state.current_step = page
+    save_progress()
+    st.rerun()
+
+
+def nav_buttons(back_page, back_label, next_page, next_label, next_ok=True, block_msg="", key="nav"):
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    with c1:
+        if back_page and st.button(back_label, use_container_width=True, key=f"{key}_back"):
+            go_page(back_page)
+    with c2:
+        if next_page and st.button(next_label, type="primary", use_container_width=True, key=f"{key}_next"):
+            if next_ok:
+                go_page(next_page)
+            else:
+                st.error(block_msg or "Complete this step first.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RISK SCALE (1-3 × 1-3 = 1-9) AND THE PER-THREAT RECORD
+# ─────────────────────────────────────────────────────────────────────────────
+LEVELS = ["Low", "Medium", "High"]
+_LEVEL_N = {"Low": 1, "Medium": 2, "High": 3, "Critical": 3}
+BAND_COLORS = {"Low": ("#E8F5E9", "#2E7D32"), "Medium": ("#FFF3CD", "#E69500"), "High": ("#FFCDD2", "#C62828")}
+
+
+def level_n(label):
+    return _LEVEL_N.get(label, 0)
+
+
+def risk_band(score):
+    return "High" if score >= 6 else "Medium" if score >= 3 else "Low"
+
+
+def rec_risk(rec):
+    l, i = rec.get("likelihood_n"), rec.get("impact_n")
+    return l * i if l and i else None
+
+
+def rec_residual(rec):
+    r = rec.get("residual")
+    return r["likelihood_n"] * r["impact_n"] if r else None
+
+
+def _score_identify(rec, pred):
+    pts, fb = 0, []
+    if rec["component"] == pred["component"]:
+        pts += 2; fb.append("✓ Correct component identified")
+    else:
+        fb.append(f"✗ Wrong component. Expected: {pred['component']}")
+    if rec["stride"] == pred["stride"]:
+        pts += 2; fb.append("✓ Correct STRIDE category")
+    else:
+        fb.append(f"✗ Wrong STRIDE. Expected: {pred['stride']}")
+    return pts, fb
+
+
+def _score_rating(rec, pred):
+    pts, fb = 0, []
+    for fld in ("likelihood", "impact"):
+        key_lbl = pred[fld]
+        shown = "High" if key_lbl == "Critical" else key_lbl
+        note = " (the key rates this Critical; Critical counts as High on the 1–3 scale)" if key_lbl == "Critical" else ""
+        if level_n(rec.get(fld)) == level_n(key_lbl) and level_n(rec.get(fld)) > 0:
+            pts += 1; fb.append(f"✓ Correct {fld}")
+        else:
+            fb.append(f"✗ {fld.capitalize()} should be: {shown}{note}")
+    return pts, fb
+
+
+def _score_controls(rec, pred):
+    pts, fb = 0, []
+    correct, incorrect = set(pred["correct_mitigations"]), set(pred.get("incorrect_mitigations", []))
+    chosen = set(rec.get("selected_mitigations", []))
+    ok, bad = chosen & correct, chosen & incorrect
+    if len(ok) >= 3:
+        pts += 4; fb.append(f"✓ Excellent control selection ({len(ok)} correct)")
+    elif len(ok) == 2:
+        pts += 3; fb.append(f"✓ Good control selection ({len(ok)} correct)")
+    elif len(ok) == 1:
+        pts += 2; fb.append(f"⚠ Partial control selection ({len(ok)} correct)")
+    else:
+        fb.append("✗ No correct controls selected")
+    if bad:
+        pts -= len(bad)
+        fb.append(f"✗ Incorrect controls penalty: {', '.join(sorted(bad))}")
+    return pts, fb
+
+
+def rescore_record(rec):
+    """Score a threat record from the stages completed so far (identify 4 pts, rating 2, controls 4)."""
+    pred = rec["predefined_threat"]
+    pts, mx = 0, 0
+    p, rec["fb_identify"] = _score_identify(rec, pred); rec["pts_identify"] = p; pts += p; mx += 4
+    fb = list(rec["fb_identify"])
+    if rec.get("rated"):
+        p, rec["fb_rating"] = _score_rating(rec, pred); pts += p; mx += 2; fb += rec["fb_rating"]
+    if rec.get("controlled"):
+        p, rec["fb_controls"] = _score_controls(rec, pred); pts += p; mx += 4; fb += rec["fb_controls"]
+    rec["score"], rec["max_score"], rec["feedback"] = max(0, pts), mx, fb
+
+
+def calculate_threat_score(user_threat, predefined_threat):
+    """Compatibility helper: full score for a complete answer."""
+    rec = {**user_threat, "predefined_threat": predefined_threat, "rated": True, "controlled": True}
+    rescore_record(rec)
+    return rec["score"], rec["max_score"], rec["feedback"]
+
+
+def recalc_totals():
+    ans = st.session_state.user_answers
+    st.session_state.total_score = sum(a["score"] for a in ans)
+    st.session_state.max_score = sum(a["max_score"] for a in ans)
+    st.session_state.threats = [
+        {k: a.get(k) for k in ("component", "stride", "likelihood", "impact", "selected_mitigations", "matched_threat_id")}
+        for a in ans]
+
+
+def new_record(component, stride, pred):
+    rec = {"component": component, "stride": stride, "matched_threat_id": pred["id"],
+           "likelihood": "Not rated", "impact": "Not rated", "likelihood_n": None, "impact_n": None,
+           "rated": False, "selected_mitigations": [], "controlled": False, "residual": None,
+           "predefined_threat": pred, "score": 0, "max_score": 4, "feedback": []}
+    rescore_record(rec)
+    return rec
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONTROL CATEGORIES (guardrails · filtering · access rules · monitoring)
+# ─────────────────────────────────────────────────────────────────────────────
+CONTROL_CATEGORIES = {
+    "Guardrails":   ("🧱", "Secure-by-design defaults and architecture constraints: encryption, safe configuration, failure containment."),
+    "Filtering":    ("🧪", "Checks on what goes in and out: validation, sanitisation, parameterised queries, output encoding, error hygiene."),
+    "Access rules": ("🔑", "Limits on who/what can do what: authentication, authorisation, least privilege, rate limits, segmentation."),
+    "Monitoring":   ("📡", "Detects what prevention misses: logging, audit trails, alerting, anomaly detection."),
+}
+_CAT_PATTERNS = [
+    ("Monitoring", r"\b(?:log(?!in|ic)|audit|monitor|alert|siem|anomal|trac(?:e|ing)|detect|cloudtrail|forensic|telemetry|timestamp|nonce)"),
+    ("Filtering",  r"\b(?:validat|sanitiz|sanitis|parameteri|prepared|orm\b|encod|escap|csp\b|content security|waf\b|filter|schema|allowlist|whitelist|blacklist|strip\b|dlp\b|mask|redact|generic error|avoid dangerously)"),
+    ("Access rules", r"\b(?:auth|mfa|token|rbac|abac|least privilege|permission|role|tenant|limit|quota|throttl|mtls|mutual tls|spiffe|segment|isolation|vlan|firewall|security group|iam\b|ownership|deny|session|jwt|oauth|hmac|signature|certificate|pinning|access)"),
+]
+
+
+def control_category(text):
+    t = str(text).lower()
+    for cat, pat in _CAT_PATTERNS:
+        if re.search(pat, t):
+            return cat
+    return "Guardrails"
+
+
+def control_coverage(controls):
+    cats = {}
+    for c in controls:
+        cats.setdefault(control_category(c), []).append(c)
+    return cats
+
+
+def _control_chips(controls):
+    cats = control_coverage(controls)
+    chips = []
+    for cat, (ic, _) in CONTROL_CATEGORIES.items():
+        n = len(cats.get(cat, []))
+        bg, fg = ("#E8F5E9", "#1B5E20") if n else ("#F5F5F5", "#9E9E9E")
+        chips.append(f'<span style="background:{bg};color:{fg};padding:2px 10px;border-radius:12px;font-size:0.8em;'
+                     f'margin-right:6px;border:1px solid {fg}33">{ic} {cat}: {n}</span>')
+    return "".join(chips)
+
+
+def risk_matrix_html(items, title="Likelihood →"):
+    """items: list of (likelihood_n, impact_n, label)."""
+    cells = {}
+    for l, i, lab in items:
+        if l and i:
+            cells.setdefault((l, i), []).append(lab)
+    rows = []
+    for i in (3, 2, 1):
+        tds = [f'<td style="padding:6px 10px;font-weight:700;font-size:0.8em;color:#455A64;text-align:right;white-space:nowrap">{LEVELS[i-1]} impact</td>']
+        for l in (1, 2, 3):
+            fill, stroke = BAND_COLORS[risk_band(l * i)]
+            labs = ", ".join(_esc(x) for x in cells.get((l, i), []))
+            tds.append(f'<td style="background:{fill};border:2px solid {stroke};padding:8px;min-width:110px;height:62px;'
+                       f'text-align:center;vertical-align:middle"><div style="font-size:0.7em;color:{stroke};font-weight:700">{l*i}</div>'
+                       f'<div style="font-size:0.82em;font-weight:700;color:#222">{labs}</div></td>')
+        rows.append("<tr>" + "".join(tds) + "</tr>")
+    head = ('<tr><td></td>' + "".join(f'<td style="text-align:center;font-weight:700;font-size:0.8em;color:#455A64;padding:4px">{LEVELS[l-1]}</td>'
+                                       for l in (1, 2, 3)) + "</tr>")
+    foot = f'<tr><td></td><td colspan="3" style="text-align:center;font-size:0.75em;color:#78909C;padding-top:4px">{title}</td></tr>'
+    return f'<table style="border-collapse:separate;border-spacing:4px;margin:6px 0">{head}{"".join(rows)}{foot}</table>'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCOPE / OPEN QUESTIONS / REVIEW-PLAN MODELS (per workshop)
+# ─────────────────────────────────────────────────────────────────────────────
+def get_scope(ws_id=None):
+    ws_id = ws_id or st.session_state.selected_workshop
+    sc = st.session_state.scope_models.setdefault(ws_id, {})
+    for k, v in (("statement", ""), ("must_do", []), ("must_never", []), ("assumptions", []),
+                 ("exclusions", []), ("oos_components", []), ("goals", [])):
+        sc.setdefault(k, v)
+    return sc
+
+
+def get_open_questions(ws_id=None):
+    ws_id = ws_id or st.session_state.selected_workshop
+    d = st.session_state.open_questions.setdefault(ws_id, {})
+    d.setdefault("questions", []); d.setdefault("accepted", "")
+    return d
+
+
+def get_review_plan(ws_id=None):
+    ws_id = ws_id or st.session_state.selected_workshop
+    d = st.session_state.review_plans.setdefault(ws_id, {})
+    for k, v in (("owner", ""), ("security_role", "Security — expertise and challenge"), ("next_review", ""),
+                 ("full", []), ("light", []), ("triggers", []), ("notes", "")):
+        d.setdefault(k, v)
+    return d
+
+
+def scope_checks(sc):
+    """(ok, text, required) — required items gate the Next button."""
+    goal_ok = any(any(ch.isdigit() for ch in g) for g in sc["goals"])
+    return [
+        (len(sc["statement"].strip()) >= 25, "A specific scope statement (one deployed system, not “our platform”)", True),
+        (len(sc["must_do"]) >= 1, "At least one thing the system MUST do", True),
+        (len(sc["must_never"]) >= 1, "At least one thing the system must NEVER do (becomes a security requirement)", True),
+        (len(sc["assumptions"]) >= 1, "At least one explicit assumption", True),
+        (len(sc["exclusions"]) + len(sc["oos_components"]) >= 1, "At least one exclusion (what is out of scope)", True),
+        (goal_ok, "A measurable success goal (contains a number or threshold)", False),
+    ]
+
+
+def scope_complete(sc):
+    return all(ok for ok, _, req in scope_checks(sc) if req)
+
+
+def scope_reminder():
+    sc = get_scope()
+    if sc["statement"].strip():
+        st.caption(f"📐 **In scope:** {sc['statement'].strip()[:160]}  ·  {len(sc['assumptions'])} assumptions  ·  "
+                   f"{len(sc['exclusions']) + len(sc['oos_components'])} exclusions")
+    else:
+        st.caption("📐 Scope not defined yet — Step 1 documents what is in scope, excluded and assumed.")
+
+
+def scope_examples(cfg):
+    s = cfg["scenario"]
+    comps = s["components"]
+    third = [c["name"] for c in comps if c["type"] == "external_entity" and _lane_of(c) == "Third-Party"]
+    users = [c["name"] for c in comps if c["type"] == "external_entity" and _lane_of(c) != "Third-Party"]
+    assets = s.get("assets", []) or ["sensitive data"]
+    return {
+        "statement": f"{s['title']} — {s['description']} ({cfg.get('architecture_type', 'architecture')})"
+                     + (f", integrated with {', '.join(third)}" if third else "") + ".",
+        "must_do": [f"Preserve: {o}" for o in s.get("objectives", [])[:3]],
+        "must_never": [f"Never disclose {a} to unauthorised parties" for a in assets[:2]]
+                      + ["Never accept state-changing requests from unauthenticated callers"],
+        "assumptions": [
+            {"Assumption": "All callers are authenticated before reaching internal services",
+             "How we will verify": "Review gateway/auth configuration; test an unauthenticated request", "Status": "Unverified"},
+            {"Assumption": f"{third[0]} is trustworthy and its integration is secured" if third else "Cloud provider controls are configured as documented",
+             "How we will verify": "Vendor security report / contract review", "Status": "Unverified"},
+        ],
+        "exclusions": [
+            {"Excluded item": "Physical security of data centres / provider facilities", "Reason": "Covered by the provider's shared-responsibility model"},
+            {"Excluded item": "Security of end-user devices", "Reason": "Outside our control"},
+        ],
+        "goals": ["No high-severity security incident in production this quarter",
+                  "Mean time to detect an attack under 4 hours",
+                  "100% of Zone 7+ data stores have encryption and audit logging"],
+    }
+
+
+def _apply_scope_examples(ws_id):
+    ex = scope_examples(WORKSHOPS[ws_id])
+    sc = get_scope(ws_id)
+    for fld, key in (("statement", f"w_stmt_{ws_id}"), ("must_do", f"w_must_do_{ws_id}"),
+                     ("must_never", f"w_must_never_{ws_id}"), ("goals", f"w_goals_{ws_id}")):
+        if not sc[fld]:
+            sc[fld] = ex[fld]
+            st.session_state[key] = ex[fld] if fld == "statement" else "\n".join(ex[fld])
+    for kind, fld in (("assump", "assumptions"), ("excl", "exclusions")):
+        if not sc[fld]:
+            sc[fld] = ex[fld]
+            st.session_state[f"_seed_{kind}_{ws_id}"] = pd.DataFrame(ex[fld])
+            st.session_state.pop(f"w_ed_{kind}_{ws_id}", None)
+
+
+def _lines(text):
+    return [ln.strip(" -•\t") for ln in str(text).splitlines() if ln.strip(" -•\t")]
+
+
+def _table_editor(ws_id, kind, cols, rows, column_config=None):
+    sk = f"_seed_{kind}_{ws_id}"
+    if sk not in st.session_state:
+        st.session_state[sk] = pd.DataFrame(rows, columns=cols)
+    df = st.data_editor(st.session_state[sk], num_rows="dynamic", key=f"w_ed_{kind}_{ws_id}",
+                        use_container_width=True, hide_index=True, column_config=column_config or {})
+    out = []
+    for r in df.fillna("").to_dict("records"):
+        row = {c: str(r.get(c, "")).strip() for c in cols}
+        if row[cols[0]]:
+            out.append(row)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE 1 — SCOPE
+# ═══════════════════════════════════════════════════════════════════════════════
+def render_scope_page():
+    ws = st.session_state.selected_workshop
+    cfg = WORKSHOPS[ws]
+    s = cfg["scenario"]
+    sc = get_scope(ws)
+    names = [c["name"] for c in s["components"]]
+
+    st.header("Step 1: Define Scope & Goals")
+    st.markdown("""
+    <div class="methodology-step">
+    <strong>📐 Stage 1 · Scope</strong><br>
+    Draw a box around what you are protecting. A threat model cannot boil the ocean — pick <strong>one deployed system</strong>.
+    Write down what it <strong>must do</strong> and <strong>must never do</strong> (these become your security requirements),
+    document your <strong>assumptions</strong> and <strong>exclusions</strong> explicitly, and set <strong>measurable goals</strong>.
+    <em>Half of security incidents come from violated assumptions nobody thought to verify.</em><br>
+    ⏱️ Time-box: perfect clarity matters less than starting. Spend about 10 minutes here.
+    </div>""", unsafe_allow_html=True)
+
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        st.markdown(f"**System:** {s['title']} — {s['description']}")
+        st.markdown(f"**Business context:** {s['business_context']}")
+        st.markdown("**Security objectives:** " + " · ".join(s["objectives"]))
+    with c2:
+        st.markdown("**Assets in play:** " + ", ".join(s.get("assets", [])))
+        st.markdown("**Compliance drivers:** " + ", ".join(s.get("compliance", [])))
+
+    st.button("💡 Fill empty fields with scenario-based examples", key="w_scope_examples",
+              on_click=_apply_scope_examples, args=(ws,),
+              help="Only fills fields that are still empty. Edit the examples so they reflect your own reasoning.")
+
+    st.markdown("### 1️⃣ What exactly are you protecting?")
+    st.caption("Bad: “Our platform”.  Good: one named system, its version/platform, key services and integrations.")
+    statement = st.text_area("System in scope", value=sc["statement"], key=f"w_stmt_{ws}", height=90, max_chars=500,
+                             placeholder=f"e.g. {s['title']} v2.0 — {s['description']}, integrated with ...")
+
+    st.markdown("### 2️⃣ Security requirements")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        must_do = st.text_area("The system MUST … (one per line)", value="\n".join(sc["must_do"]),
+                               key=f"w_must_do_{ws}", height=130)
+    with cc2:
+        must_never = st.text_area("The system must NEVER … (one per line)", value="\n".join(sc["must_never"]),
+                                  key=f"w_must_never_{ws}", height=130)
+
+    st.markdown("### 3️⃣ Assumptions")
+    st.caption("State what you are taking for granted, and how you would verify it. Unverified assumptions are risks.")
+    assumptions = _table_editor(
+        ws, "assump", ["Assumption", "How we will verify", "Status"], sc["assumptions"],
+        {"Status": st.column_config.SelectboxColumn("Status", options=["Unverified", "Verified", "Disproved"], default="Unverified")})
+
+    st.markdown("### 4️⃣ Exclusions (out of scope)")
+    st.caption("Say what you are deliberately NOT analysing and why. Components marked out of scope are greyed on every diagram.")
+    exclusions = _table_editor(ws, "excl", ["Excluded item", "Reason"], sc["exclusions"])
+    oos = st.multiselect("Components that are OUT of scope", names,
+                         default=[n for n in sc["oos_components"] if n in names], key=f"w_oos_{ws}")
+
+    st.markdown("### 5️⃣ Measurable goals")
+    goals = st.text_area("What does success look like? (one per line, with numbers)", value="\n".join(sc["goals"]),
+                         key=f"w_goals_{ws}", height=90,
+                         placeholder="e.g. Mean time to detect an attack under 4 hours")
+
+    new = {"statement": statement.strip(), "must_do": _lines(must_do), "must_never": _lines(must_never),
+           "assumptions": assumptions, "exclusions": exclusions, "oos_components": list(oos), "goals": _lines(goals)}
+    if any(sc[k] != v for k, v in new.items()):
+        sc.update(new)
+        save_progress()
+
+    st.markdown("---")
+    st.subheader("🗺️ Scope view")
+    show_architecture_diagram(cfg, mode="scope", key_suffix="s1_scope", editable=True, default_kind="asset")
+
+    st.subheader("✅ Scope checklist")
+    for ok, text, req in scope_checks(sc):
+        st.markdown(f"{'✅' if ok else ('⚠️' if req else '➖')} {text}" + ("" if req else " *(recommended)*"))
+
+    nav_buttons(None, "", 2, "Next: Draw the DFD ➡️", scope_complete(sc),
+                "Complete the required scope items above before moving on.", key="p1")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE 6 helper — record the learner's identified threats
+# ═══════════════════════════════════════════════════════════════════════════════
+def render_identified_threats():
+    recs = st.session_state.user_answers
+    if not recs:
+        return
+    st.subheader(f"📋 Threats you have identified ({len(recs)}/{current_workshop['target_threats']})")
+    for idx, rec in enumerate(recs):
+        pred = rec["predefined_threat"]
+        pts = rec.get("pts_identify", 0) if "pts_identify" in rec else _score_identify(rec, pred)[0]
+        icon = "✅" if pts == 4 else "⚠️" if pts >= 2 else "❌"
+        with st.expander(f"{icon} {pred['id']} · {rec['stride']} on {rec['component']}  ({pts}/4)"):
+            for fb in rec.get("fb_identify", []):
+                (st.success if fb.startswith("✓") else st.error)(fb)
+            st.markdown(f"""
+            <div class="stride-rule-box">
+            <strong>Threat scenario:</strong> {pred['threat']}<br>
+            <strong>Zone rule applied:</strong> {pred.get('stride_rule_applied', 'N/A')}<br>
+            <strong>From zone:</strong> {pred.get('zone_from', 'N/A')} → <strong>To zone:</strong> {pred.get('zone_to', 'N/A')}
+            </div>""", unsafe_allow_html=True)
+            if pred.get("explanation"):
+                st.markdown(f"""
+                <div style="background:#F0F4F8;border-radius:8px;padding:12px 16px;margin:6px 0">
+                <strong style="color:#1A3A5C">📖 Explanation</strong><br>
+                <span style="font-size:0.91em;color:#2C3E50">{pred['explanation']}</span></div>""", unsafe_allow_html=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE 7 — SCORING (impact × likelihood, 1-3 scale)
+# ═══════════════════════════════════════════════════════════════════════════════
+def render_scoring_page():
+    cfg = current_workshop
+    recs = st.session_state.user_answers
+    st.header("Step 4: Score the Risk — Impact × Likelihood")
+    scope_reminder()
+    st.markdown("""
+    <div class="methodology-step">
+    <strong>📊 Stage 4 · Scoring</strong><br>
+    Not all threats deserve equal attention. Score each one for <strong>impact</strong> and <strong>likelihood</strong> on a simple
+    <strong>1–3 scale</strong> (Low / Medium / High) and multiply them for a <strong>risk score from 1 to 9</strong>.
+    Do not spend hours debating whether something is a 2 or a 3 — the goal is rough prioritisation, not precision.
+    </div>""", unsafe_allow_html=True)
+    with st.expander("📏 How to judge impact and likelihood", expanded=False):
+        g1, g2 = st.columns(2)
+        g1.markdown("""**Impact** — technical *and* business consequences
+- **High (3):** data breach affecting many customers, complete outage, regulatory violation
+- **Medium (2):** individual privacy violation, degraded service, reputational damage
+- **Low (1):** minor functionality issue, more support tickets""")
+        g2.markdown("""**Likelihood** — attacker motivation and capability
+- **High (3):** needs only public access, financially motivated, tools exist
+- **Medium (2):** needs authenticated access or moderate skill
+- **Low (1):** needs physical access or nation-state capability""")
+
+    if not recs:
+        st.warning("Identify at least one threat first.")
+        nav_buttons(6, "⬅️ Back to Identify Threats", None, "", key="p7e")
+        return
+
+    with st.form("scoring_form"):
+        st.subheader("➕ Rate each threat")
+        vals = {}
+        for rec in recs:
+            pred = rec["predefined_threat"]
+            st.markdown(f"**{pred['id']} · {rec['stride']} on {rec['component']}**")
+            st.caption(pred["threat"])
+            a, b = st.columns(2)
+            lik = a.select_slider("Likelihood", options=LEVELS, key=f"w_lik_{pred['id']}",
+                                  value=rec["likelihood"] if rec["likelihood"] in LEVELS else "Low")
+            imp = b.select_slider("Impact", options=LEVELS, key=f"w_imp_{pred['id']}",
+                                  value=rec["impact"] if rec["impact"] in LEVELS else "Low")
+            vals[pred["id"]] = (lik, imp)
+            st.markdown("---")
+        if st.form_submit_button("📊 Score all threats", type="primary", use_container_width=True):
+            for rec in recs:
+                lik, imp = vals[rec["matched_threat_id"]]
+                rec.update(likelihood=lik, impact=imp, likelihood_n=level_n(lik), impact_n=level_n(imp), rated=True)
+                rescore_record(rec)
+            recalc_totals()
+            save_progress()
+            st.rerun()
+
+    rated = [r for r in recs if r.get("rated")]
+    if rated:
+        st.subheader("🎯 Risk register (highest first)")
+        ordered = sorted(rated, key=lambda r: -rec_risk(r))
+        st.dataframe(pd.DataFrame([{
+            "Threat": r["matched_threat_id"], "Component / flow": r["component"], "STRIDE": r["stride"],
+            "Likelihood": f"{r['likelihood']} ({r['likelihood_n']})", "Impact": f"{r['impact']} ({r['impact_n']})",
+            "Risk (1–9)": rec_risk(r), "Band": risk_band(rec_risk(r)),
+            "Priority": "Controls required" if rec_risk(r) >= 6 else "Plan controls" if rec_risk(r) >= 3 else "Accept / monitor"}
+            for r in ordered]), use_container_width=True, hide_index=True)
+        m1, m2 = st.columns([1, 1])
+        with m1:
+            st.markdown("**Risk matrix**")
+            st.markdown(risk_matrix_html([(r["likelihood_n"], r["impact_n"], r["matched_threat_id"]) for r in rated]),
+                        unsafe_allow_html=True)
+        with m2:
+            st.markdown("**How your ratings compare**")
+            for r in ordered:
+                fb = r.get("fb_rating", [])
+                with st.expander(f"{r['matched_threat_id']} — risk {rec_risk(r)} ({risk_band(rec_risk(r))})"):
+                    for line in fb:
+                        (st.success if line.startswith("✓") else st.error)(line)
+                    why = r["predefined_threat"].get("why_this_risk")
+                    if why:
+                        st.markdown(f"""<div style="background:#FFF8E1;border-left:4px solid #F9A825;border-radius:6px;padding:10px 14px">
+                        <strong style="color:#E65100;font-size:0.85em">⚖️ WHY THIS RISK LEVEL</strong><br>
+                        <span style="font-size:0.88em;color:#444">{why}</span></div>""", unsafe_allow_html=True)
+        tabs = st.tabs(["🔥 Risk heat map", "🏗️ Clean architecture"])
+        with tabs[0]:
+            show_architecture_diagram(cfg, mode="scoring", key_suffix="s7_heat")
+        with tabs[1]:
+            show_architecture_diagram(cfg, mode="architecture", key_suffix="s7_arch")
+
+    nav_buttons(6, "⬅️ Back to Identify Threats", 8, "Next: Map STRIDE to controls ➡️",
+                bool(recs) and all(r.get("rated") for r in recs), "Rate every threat (press “Score all threats”) first.", key="p7")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE 9 — SELECT CONTROLS
+# ═══════════════════════════════════════════════════════════════════════════════
+def sync_labels_from_analysis(include_controls=False):
+    ws = st.session_state.selected_workshop
+    items = get_annotations(ws)
+    seen = {i.get("origin") for i in items}
+    added = 0
+    for r in st.session_state.user_answers:
+        origin = f"threat:{r['matched_threat_id']}"
+        if origin in seen:
+            tid = next(i["id"] for i in items if i.get("origin") == origin)
+        else:
+            tid = _next_annotation_id(items, "threat")
+            items.append({"id": tid, "kind": "threat", "label": _trunc(f"{r['stride']}: {r['predefined_threat'].get('threat', '')}", 80),
+                          "target": r["component"], "links": [], "notes": "", "origin": origin})
+            seen.add(origin); added += 1
+        if include_controls and r.get("controlled"):
+            for m in r.get("selected_mitigations", []):
+                o2 = f"ctrl:{r['matched_threat_id']}:{m}"
+                if o2 not in seen:
+                    items.append({"id": _next_annotation_id(items, "control"), "kind": "control", "label": _trunc(m, 80),
+                                  "target": r["component"], "links": [tid], "notes": "", "origin": o2})
+                    seen.add(o2); added += 1
+    return added
+
+
+def render_controls_page():
+    cfg = current_workshop
+    recs = st.session_state.user_answers
+    st.header("Step 5: Pick Controls for the Risks that Matter")
+    scope_reminder()
+    st.markdown("""
+    <div class="methodology-step">
+    <strong>🛡️ Stage 5 · Controls</strong><br>
+    For each high-risk threat choose practical controls, and be able to say <em>why</em> each one is there and which threat it addresses.
+    Controls fall into four categories — aim for <strong>defence in depth</strong>: at least one preventive control
+    (guardrails, filtering or access rules) <em>and</em> monitoring to detect what prevention misses.
+    </div>""", unsafe_allow_html=True)
+    cols = st.columns(4)
+    for col, (cat, (ic, desc)) in zip(cols, CONTROL_CATEGORIES.items()):
+        col.markdown(f"**{ic} {cat}**")
+        col.caption(desc)
+
+    rated = [r for r in recs if r.get("rated")]
+    if not rated:
+        st.warning("Score your threats first (Step 4).")
+        nav_buttons(8, "⬅️ Back to OWASP mapping", None, "", key="p9e")
+        return
+    ordered = sorted(rated, key=lambda r: -rec_risk(r))
+
+    with st.form("controls_form"):
+        st.subheader("➕ Select controls (highest risk first)")
+        chosen = {}
+        for rec in ordered:
+            pred = rec["predefined_threat"]
+            band = risk_band(rec_risk(rec))
+            fill, stroke = BAND_COLORS[band]
+            st.markdown(f"""<div style="background:{fill};border-left:5px solid {stroke};border-radius:8px;padding:8px 14px;margin-top:6px">
+            <strong>{pred['id']} · {rec['stride']} on {_esc(rec['component'])}</strong> — risk <strong>{rec_risk(rec)}</strong> ({band})<br>
+            <span style="font-size:0.88em;color:#444">{pred['threat']}</span></div>""", unsafe_allow_html=True)
+            owasp = OWASP_STRIDE_MAP.get(pred["stride"], {})
+            if owasp:
+                st.caption(f"OWASP: {', '.join(owasp['owasp'])} — {owasp.get('owasp_detail', '')}")
+            correct, wrong = pred["correct_mitigations"], pred.get("incorrect_mitigations", [])
+            options = correct + wrong
+            seed = int(hashlib.md5(pred["id"].encode()).hexdigest(), 16) % 10000
+            random.Random(seed).shuffle(options)
+            st.markdown(f"*{len(correct)} correct controls, {len(wrong)} distractors — choose wisely*")
+            chosen[pred["id"]] = st.multiselect(
+                "Controls (select all that apply)", options, key=f"w_ctl_{pred['id']}",
+                default=[m for m in rec.get("selected_mitigations", []) if m in options])
+            st.markdown("---")
+        if st.form_submit_button("🛡️ Submit controls", type="primary", use_container_width=True):
+            for rec in ordered:
+                rec["selected_mitigations"] = list(chosen[rec["matched_threat_id"]])
+                rec["controlled"] = True
+                rescore_record(rec)
+            recalc_totals()
+            save_progress()
+            st.rerun()
+
+    done = [r for r in ordered if r.get("controlled")]
+    if done:
+        st.subheader("🧭 Defence-in-depth check")
+        for rec in done:
+            pred = rec["predefined_threat"]
+            cats = control_coverage(rec["selected_mitigations"])
+            prevent = any(c in cats for c in ("Guardrails", "Filtering", "Access rules"))
+            detect = "Monitoring" in cats
+            band = risk_band(rec_risk(rec))
+            if band == "High" and (not prevent or not detect):
+                miss = "a preventive control" if not prevent else "monitoring to detect failures"
+                badge = f"⚠️ High-risk threat is missing {miss}"
+            elif not rec["selected_mitigations"]:
+                badge = "⚠️ No controls selected"
+            else:
+                badge = "✅ Layered coverage" if prevent and detect else "ℹ️ Preventive only — consider monitoring" if prevent else "ℹ️ Detective only — consider a preventive control"
+            with st.expander(f"{pred['id']} — {badge}"):
+                st.markdown(_control_chips(rec["selected_mitigations"]), unsafe_allow_html=True)
+                for line in rec.get("fb_controls", []):
+                    (st.success if line.startswith("✓") else st.error if line.startswith("✗") else st.warning)(line)
+                for m in rec["selected_mitigations"]:
+                    st.markdown(f"- {CONTROL_CATEGORIES[control_category(m)][0]} **{control_category(m)}** — {m}")
+                why = pred.get("why_these_controls")
+                if why:
+                    st.markdown(f"""<div style="background:#E8F5E9;border-left:4px solid #43A047;border-radius:6px;padding:10px 14px">
+                    <strong style="color:#1B5E20;font-size:0.85em">🛡️ WHY THESE CONTROLS</strong><br>
+                    <span style="font-size:0.88em;color:#444">{why}</span></div>""", unsafe_allow_html=True)
+
+        st.subheader("🗺️ Controls on the architecture")
+        if st.button("🏷️ Add my threats and controls to the diagram labels", key="w_sync_labels"):
+            n = sync_labels_from_analysis(include_controls=True)
+            save_progress()
+            st.success(f"Added {n} label(s).") if n else st.info("Labels are already up to date.")
+            st.rerun()
+        show_architecture_diagram(cfg, mode="controls", key_suffix="s9_ctl", editable=True, default_kind="control")
+
+    nav_buttons(8, "⬅️ Back to OWASP mapping", 10, "Next: Residual risk ➡️",
+                bool(rated) and all(r.get("controlled") for r in rated), "Submit controls for every threat first.", key="p9")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE 10 — RESIDUAL RISK
+# ═══════════════════════════════════════════════════════════════════════════════
+DECISIONS = ["Accept", "Reduce further", "Transfer (insurance / vendor)", "Avoid (remove the feature)"]
+_CONTAINMENT = ["encrypt", "segment", "isolation", "backup", "quota", "least privilege", "row-level", "rls", "redact", "mask"]
+
+
+def suggested_residual(rec):
+    pred = rec["predefined_threat"]
+    good = [m for m in rec.get("selected_mitigations", []) if m in set(pred["correct_mitigations"])]
+    cats = {control_category(m) for m in good}
+    lik, imp = rec["likelihood_n"], rec["impact_n"]
+    if cats & {"Guardrails", "Filtering", "Access rules"}:
+        lik = max(1, lik - (2 if len(good) >= 3 else 1))
+    if any(any(k in m.lower() for k in _CONTAINMENT) for m in good):
+        imp = max(1, imp - 1)
+    return lik, imp
+
+
+def render_residual_page():
+    cfg = current_workshop
+    recs = [r for r in st.session_state.user_answers if r.get("controlled")]
+    oq = get_open_questions()
+    st.header("Step 6: Residual Risk & Open Questions")
+    scope_reminder()
+    st.markdown("""
+    <div class="methodology-step">
+    <strong>⚖️ Stage 6 · Residual risk</strong><br>
+    Controls reduce risk; they rarely remove it. For every threat, re-score <strong>what remains after your controls</strong>,
+    decide what to do about it, and write down what you do <strong>not</strong> know. Documenting residual risk sets realistic
+    expectations, guides incident response and gives future team members context.
+    </div>""", unsafe_allow_html=True)
+    if not recs:
+        st.warning("Select controls first (Step 5).")
+        nav_buttons(9, "⬅️ Back to Controls", None, "", key="p10e")
+        return
+
+    st.caption("Controls usually lower **likelihood**. Impact only drops with containment (segmentation, encryption, quotas, backups). "
+               "The suggestion below is based on the *correct* controls you selected.")
+    errors = []
+    with st.form("residual_form"):
+        vals = {}
+        for rec in sorted(recs, key=lambda r: -rec_risk(r)):
+            pred = rec["predefined_threat"]
+            sl, si = suggested_residual(rec)
+            cur = rec.get("residual") or {}
+            st.markdown(f"**{pred['id']} · {rec['stride']} on {rec['component']}** — inherent risk **{rec_risk(rec)}** "
+                        f"({rec['likelihood']} × {rec['impact']})")
+            st.caption(f"Suggested residual: likelihood {LEVELS[sl-1]}, impact {LEVELS[si-1]} → {sl*si}")
+            a, b, c = st.columns([1, 1, 1])
+            rl = a.select_slider("Residual likelihood", LEVELS, key=f"w_rl_{pred['id']}", value=LEVELS[cur.get("likelihood_n", sl) - 1])
+            ri = b.select_slider("Residual impact", LEVELS, key=f"w_ri_{pred['id']}", value=LEVELS[cur.get("impact_n", si) - 1])
+            dec = c.selectbox("Decision", DECISIONS, key=f"w_dec_{pred['id']}",
+                              index=DECISIONS.index(cur["decision"]) if cur.get("decision") in DECISIONS else 0)
+            why = st.text_input("Rationale (why is this acceptable / what else is needed?)", value=cur.get("rationale", ""),
+                                key=f"w_why_{pred['id']}", max_chars=200)
+            vals[pred["id"]] = (rl, ri, dec, why)
+            st.markdown("---")
+        if st.form_submit_button("⚖️ Save residual risk", type="primary", use_container_width=True):
+            for rec in recs:
+                rl, ri, dec, why = vals[rec["matched_threat_id"]]
+                rl_n, ri_n = level_n(rl), level_n(ri)
+                pid = rec["matched_threat_id"]
+                if rl_n > rec["likelihood_n"] or ri_n > rec["impact_n"]:
+                    errors.append(f"{pid}: residual risk cannot be higher than inherent risk — your controls should not make things worse.")
+                if rl_n * ri_n >= 6 and dec == DECISIONS[0] and len(why.strip()) < 10:
+                    errors.append(f"{pid}: accepting a HIGH residual risk (≥ 6) needs a written rationale and a named owner.")
+            if not errors:
+                for rec in recs:
+                    rl, ri, dec, why = vals[rec["matched_threat_id"]]
+                    rec["residual"] = {"likelihood_n": level_n(rl), "impact_n": level_n(ri), "decision": dec, "rationale": why.strip()}
+                save_progress()
+                st.rerun()
+    for e in errors:
+        st.error(e)
+
+    saved = [r for r in recs if r.get("residual")]
+    if saved:
+        st.subheader("📉 Inherent vs residual risk")
+        st.dataframe(pd.DataFrame([{
+            "Threat": r["matched_threat_id"], "Component / flow": r["component"],
+            "Inherent": rec_risk(r), "Residual": rec_residual(r),
+            "Reduction": rec_risk(r) - rec_residual(r), "Residual band": risk_band(rec_residual(r)),
+            "Decision": r["residual"]["decision"], "Rationale": r["residual"]["rationale"]}
+            for r in sorted(saved, key=lambda r: -rec_residual(r))]), use_container_width=True, hide_index=True)
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            st.markdown("**Before controls**")
+            st.markdown(risk_matrix_html([(r["likelihood_n"], r["impact_n"], r["matched_threat_id"]) for r in saved]), unsafe_allow_html=True)
+        with mc2:
+            st.markdown("**After controls**")
+            st.markdown(risk_matrix_html([(r["residual"]["likelihood_n"], r["residual"]["impact_n"], r["matched_threat_id"]) for r in saved]), unsafe_allow_html=True)
+        tabs = st.tabs(["⚖️ Residual heat map", "🔥 Inherent heat map"])
+        with tabs[0]:
+            show_architecture_diagram(cfg, mode="residual", key_suffix="s10_res")
+        with tabs[1]:
+            show_architecture_diagram(cfg, mode="scoring", key_suffix="s10_inh")
+
+    st.markdown("---")
+    st.subheader("❓ Open questions and accepted risk")
+    st.caption("List what you do not know and cannot fully control — dependencies, vendors, slow-moving threats, unverified assumptions.")
+    third = [c["name"] for c in cfg["scenario"]["components"] if c["type"] == "external_entity" and _lane_of(c) == "Third-Party"]
+    st.button("💡 Insert example questions", key="w_oq_examples", on_click=_apply_oq_examples, args=(cfg,))
+    qs = st.text_area("Open questions (one per line)", value="\n".join(oq["questions"]), key=f"w_oq_{st.session_state.selected_workshop}", height=130,
+                      placeholder=f"e.g. What happens if {third[0] if third else 'a third-party provider'} is compromised?")
+    acc = st.text_area("Accepted-risk statement", value=oq["accepted"], key=f"w_acc_{st.session_state.selected_workshop}", height=90,
+                       placeholder="e.g. We accept that a determined attacker may slow a single endpoint, but we alert within 4 hours and can fail over.")
+    newq, newa = _lines(qs), acc.strip()
+    if newq != oq["questions"] or newa != oq["accepted"]:
+        oq["questions"], oq["accepted"] = newq, newa
+        save_progress()
+
+    ready = bool(recs) and all(r.get("residual") for r in recs) and len(oq["questions"]) >= 1
+    nav_buttons(9, "⬅️ Back to Controls", 11, "Next: Plan the review ➡️", ready,
+                "Save residual risk for every threat and list at least one open question.", key="p10")
+
+
+def _apply_oq_examples(cfg):
+    ws = st.session_state.selected_workshop
+    oq = get_open_questions(ws)
+    third = [c["name"] for c in cfg["scenario"]["components"] if c["type"] == "external_entity" and _lane_of(c) == "Third-Party"]
+    ex = [f"What happens if {t} is compromised or changes its behaviour?" for t in third[:2]]
+    ex += ["How quickly would we notice a slow, low-volume attack?", "Which assumptions from Step 1 are still unverified?",
+           "How often do our dependencies change, and could an update introduce a vulnerability?"]
+    if not oq["questions"]:
+        oq["questions"] = ex
+        st.session_state[f"w_oq_{ws}"] = "\n".join(ex)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE 11 — REVIEW PLAN
+# ═══════════════════════════════════════════════════════════════════════════════
+FULL_TRIGGERS = ["New system or a high-risk launch", "Major architecture change",
+                 "A feature gives a component new access to sensitive data or privileged actions",
+                 "A new trust boundary is introduced", "Move to a new hosting platform or cloud region"]
+LIGHT_CHECKS = ["What changed since the last review?", "Which trust boundaries moved?",
+                "Were new endpoints, data stores, integrations or outputs introduced?",
+                "Do existing controls still cover the risk?", "Are the Step 1 assumptions still true?"]
+UPDATE_TRIGGERS = ["A dependency or platform has a major version change", "A component gains new permissions",
+                   "A data source or third-party integration is added or changed", "A security incident occurs",
+                   "A new attack technique becomes relevant", "Regulation or compliance requirements change",
+                   "An assumption is found to be violated"]
+
+
+def stage_status():
+    ws = st.session_state.selected_workshop
+    cfg = WORKSHOPS[ws]
+    sc, plan, oq = get_scope(ws), get_review_plan(ws), get_open_questions(ws)
+    recs = st.session_state.user_answers
+    n, tgt = len(recs), cfg["target_threats"]
+    rated = sum(1 for r in recs if r.get("rated"))
+    ctl = sum(1 for r in recs if r.get("controlled"))
+    res = sum(1 for r in recs if r.get("residual"))
+    plan_ok = bool(plan["owner"].strip() and plan["full"] and plan["light"] and plan["triggers"])
+    return [
+        ("scope", "Scope", "📐", scope_complete(sc),
+         f"Scope statement, {len(sc['must_never'])} must-never rules, {len(sc['assumptions'])} assumptions, {len(sc['exclusions']) + len(sc['oos_components'])} exclusions"),
+        ("dfd", "DFD", "🗺️", bool(st.session_state.get("zone_labelling_done")),
+         f"{len(cfg['scenario']['components'])} components, {len(cfg['scenario']['data_flows'])} flows, zones of trust applied"),
+        ("stride", "STRIDE", "⚡", n >= tgt, f"{n}/{tgt} threats identified with STRIDE zone rules"),
+        ("scoring", "Scoring", "📊", n > 0 and rated == n, f"{rated}/{n} threats scored (impact × likelihood, 1–9)"),
+        ("controls", "Controls", "🛡️", n > 0 and ctl == n, f"{ctl}/{n} threats have controls mapped"),
+        ("residual", "Residual risk", "⚖️", n > 0 and res == n and len(oq["questions"]) >= 1,
+         f"{res}/{n} residual risks recorded, {len(oq['questions'])} open questions"),
+        ("review", "Review", "🔁", plan_ok, "Owner, review cadence and update triggers defined"),
+    ]
+
+
+def render_review_plan_page():
+    ws = st.session_state.selected_workshop
+    plan = get_review_plan(ws)
+    st.header("Step 7: Schedule Reviews & Update Triggers")
+    scope_reminder()
+    st.markdown("""
+    <div class="methodology-step">
+    <strong>🔁 Stage 7 · Review</strong><br>
+    A threat model is a <strong>living document</strong>, not a compliance artefact. Systems evolve too quickly for an annual ceremony,
+    so use three levels of review. <strong>Ownership stays with product and engineering</strong> — security provides expertise and
+    challenge, but the people building and running the system must keep the model useful. If it becomes paperwork theatre, teams route around it.
+    </div>""", unsafe_allow_html=True)
+
+    c1, c2 = st.columns(2)
+    owner = c1.text_input("Owner (product / engineering)", value=plan["owner"], key=f"w_owner_{ws}", max_chars=80,
+                          placeholder="e.g. Checkout team tech lead")
+    sec = c2.text_input("Security's role", value=plan["security_role"], key=f"w_secrole_{ws}", max_chars=80)
+    try:
+        default_date = _date.fromisoformat(plan["next_review"]) if plan["next_review"] else _date.today() + _timedelta(days=30)
+    except ValueError:
+        default_date = _date.today() + _timedelta(days=30)
+    nxt = st.date_input("Next lightweight review", value=default_date, key=f"w_nextrev_{ws}")
+
+    st.markdown("### 1️⃣ Full workshop — when?")
+    st.caption("A full workshop is for a new system, a high-risk launch, a major architecture change, or new access to sensitive data or tools.")
+    full = st.multiselect("Triggers for a full workshop", FULL_TRIGGERS, default=[x for x in plan["full"] if x in FULL_TRIGGERS], key=f"w_full_{ws}")
+    st.markdown("### 2️⃣ Lightweight review — what do you check? (≈30 minutes, for ordinary feature work)")
+    light = st.multiselect("Lightweight review checklist", LIGHT_CHECKS, default=[x for x in plan["light"] if x in LIGHT_CHECKS], key=f"w_light_{ws}")
+    st.markdown("### 3️⃣ Trigger-based update — what forces an update?")
+    trig = st.multiselect("Update triggers", UPDATE_TRIGGERS, default=[x for x in plan["triggers"] if x in UPDATE_TRIGGERS], key=f"w_trig_{ws}")
+    notes = st.text_input("How will you keep this from becoming paperwork?", value=plan["notes"], key=f"w_pnotes_{ws}", max_chars=200,
+                          placeholder="e.g. Review is part of the sprint-planning checklist")
+
+    new = {"owner": owner.strip(), "security_role": sec.strip(), "next_review": nxt.isoformat() if hasattr(nxt, "isoformat") else "",
+           "full": list(full), "light": list(light), "triggers": list(trig), "notes": notes.strip()}
+    if any(plan[k] != v for k, v in new.items()):
+        plan.update(new)
+        save_progress()
+
+    st.markdown("---")
+    st.subheader("✅ Threat-model readiness")
+    status = stage_status()
+    for sid, label, icon, done, detail in status:
+        st.markdown(f"{'✅' if done else '⚠️'} {icon} **{label}** — {detail}")
+    st.progress(sum(1 for s in status if s[3]) / len(status))
+
+    nav_buttons(10, "⬅️ Back to Residual risk", 12, "Next: Assessment & report ➡️", status[-1][3],
+                "Set an owner and choose at least one full-workshop trigger, one lightweight check and one update trigger.", key="p11")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE 12 — STAGE-BY-STAGE REVIEW (replaces the old 4-step review)
+# ═══════════════════════════════════════════════════════════════════════════════
+def render_stage_review():
+    ws = st.session_state.selected_workshop
+    cfg = current_workshop
+    s = cfg["scenario"]
+    sc, oq, plan = get_scope(ws), get_open_questions(ws), get_review_plan(ws)
+    recs = st.session_state.user_answers
+    tabs = st.tabs([f"{ic} {lbl}" for _, lbl, ic in STAGES])
+
+    with tabs[0]:
+        st.markdown(f"**System in scope:** {sc['statement'] or '—'}")
+        a, b = st.columns(2)
+        a.markdown("**Must do**\n" + ("\n".join(f"- {x}" for x in sc["must_do"]) or "—"))
+        b.markdown("**Must never**\n" + ("\n".join(f"- {x}" for x in sc["must_never"]) or "—"))
+        if sc["assumptions"]:
+            st.markdown("**Assumptions**"); st.dataframe(pd.DataFrame(sc["assumptions"]), hide_index=True, use_container_width=True)
+        if sc["exclusions"] or sc["oos_components"]:
+            st.markdown("**Exclusions**")
+            if sc["exclusions"]:
+                st.dataframe(pd.DataFrame(sc["exclusions"]), hide_index=True, use_container_width=True)
+            if sc["oos_components"]:
+                st.markdown("Out-of-scope components: " + ", ".join(sc["oos_components"]))
+        if sc["goals"]:
+            st.markdown("**Goals**\n" + "\n".join(f"- {x}" for x in sc["goals"]))
+    with tabs[1]:
+        st.dataframe(pd.DataFrame([{"Component": c["name"], "Type": c["type"].replace("_", " ").title(), "Lane": _lane_of(c),
+                                    "Zone": c.get("zone", "N/A"), "Score (0-9)": c.get("zone_score", "?")}
+                                   for c in s["components"]]), use_container_width=True, hide_index=True)
+    with tabs[2]:
+        for a in recs:
+            pred = a.get("predefined_threat", {})
+            pts = a.get("pts_identify", 0)
+            css = "correct-answer" if pts == 4 else "partial-answer" if pts >= 2 else "incorrect-answer"
+            st.markdown(f"""<div class="{css}"><strong>{a['matched_threat_id']}</strong>: {pred.get('threat', '')}<br>
+            Your answer: {a['stride']} on {_esc(a['component'])} · Zone rule: {pred.get('stride_rule_applied', 'N/A')}</div>""", unsafe_allow_html=True)
+    with tabs[3]:
+        rated = [r for r in recs if r.get("rated")]
+        if rated:
+            st.markdown(risk_matrix_html([(r["likelihood_n"], r["impact_n"], r["matched_threat_id"]) for r in rated]), unsafe_allow_html=True)
+            st.dataframe(pd.DataFrame([{"Threat": r["matched_threat_id"], "Likelihood": r["likelihood"], "Impact": r["impact"],
+                                        "Risk": rec_risk(r), "Band": risk_band(rec_risk(r))}
+                                       for r in sorted(rated, key=lambda r: -rec_risk(r))]), hide_index=True, use_container_width=True)
+        else:
+            st.info("No threats were scored.")
+    with tabs[4]:
+        for a in recs:
+            if not a.get("controlled"):
+                continue
+            correct = set(a["predefined_threat"]["correct_mitigations"])
+            st.markdown(f"**{a['matched_threat_id']}** — {_control_chips(a['selected_mitigations'])}", unsafe_allow_html=True)
+            for m in a["selected_mitigations"]:
+                st.markdown(f"- {'✅' if m in correct else '❌'} {control_category(m)}: {m}")
+        for stride_cat, owasp_info in OWASP_STRIDE_MAP.items():
+            used = any(a["stride"] == stride_cat for a in recs)
+            st.markdown(f"""<div class="owasp-box">{'✅' if used else '⭕'} <strong>{stride_cat}</strong> → {', '.join(owasp_info['owasp'])}<br>
+            Key controls: {'; '.join(owasp_info['controls'][:2])}</div>""", unsafe_allow_html=True)
+    with tabs[5]:
+        res = [r for r in recs if r.get("residual")]
+        if res:
+            st.dataframe(pd.DataFrame([{"Threat": r["matched_threat_id"], "Inherent": rec_risk(r), "Residual": rec_residual(r),
+                                        "Decision": r["residual"]["decision"], "Rationale": r["residual"]["rationale"]} for r in res]),
+                         hide_index=True, use_container_width=True)
+        if oq["questions"]:
+            st.markdown("**Open questions**\n" + "\n".join(f"- {q}" for q in oq["questions"]))
+        if oq["accepted"]:
+            st.markdown(f"**Accepted-risk statement:** {oq['accepted']}")
+    with tabs[6]:
+        st.markdown(f"**Owner:** {plan['owner'] or '—'}  ·  **Security's role:** {plan['security_role'] or '—'}  ·  **Next lightweight review:** {plan['next_review'] or '—'}")
+        for title, key in (("Full-workshop triggers", "full"), ("Lightweight review checks", "light"), ("Update triggers", "triggers")):
+            if plan[key]:
+                st.markdown(f"**{title}**\n" + "\n".join(f"- {x}" for x in plan[key]))
+        if plan["notes"]:
+            st.markdown(f"**Keeping it alive:** {plan['notes']}")
+
+
+def render_stage_summary():
+    for sid, label, icon, done, detail in stage_status():
+        bg = "linear-gradient(135deg,#E8F5E9,#F1F8E9)" if done else "#F5F5F5"
+        clr = "#2E7D32" if done else "#9E9E9E"
+        st.markdown(f"""
+        <div style="background:{bg};border-left:4px solid {clr};border-radius:8px;padding:12px 16px;margin:6px 0;display:flex;align-items:center;gap:12px">
+          <span style="font-size:1.3em">{'✅' if done else '⭕'}</span>
+          <div><strong style="color:{clr}">{icon} {label}</strong><br><span style="font-size:0.85em;color:#555">{_esc(detail)}</span></div>
+        </div>""", unsafe_allow_html=True)
+
+
+def build_pdf_extra():
+    ws = st.session_state.selected_workshop
+    return {"scope": get_scope(ws), "open_questions": get_open_questions(ws), "review_plan": get_review_plan(ws),
+            "labels": list(get_annotations(ws))}
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
@@ -2464,22 +3558,25 @@ with st.sidebar:
     <div style="text-align:center;padding:10px 0 8px 0">
       <div style="font-size:2em">🔒</div>
       <div style="font-weight:700;font-size:1.05em;margin:4px 0">Threat Modeling Lab</div>
-      <div style="font-size:0.78em;opacity:0.7">4-Step Infosec Methodology</div>
+      <div style="font-size:0.78em;opacity:0.7">Scope → DFD → STRIDE → Scoring → Controls → Residual → Review</div>
     </div>
     """, unsafe_allow_html=True)
     st.markdown("---")
-    st.markdown("**🗺️ Methodology Steps**")
+    st.markdown("**🗺️ The 7 Stages**")
     st.markdown("""
-    1. 🎨 **Design** – DFD
-    2. 🏷️ **Zones of Trust** – 0–9 scale
-    3. 🔍 **STRIDE** – rule-based discovery
-    4. 🛡️ **Mitigations** – OWASP mapping
+    1. 📐 **Scope** – goals, assumptions, exclusions
+    2. 🗺️ **DFD** – elements, flows, zones of trust
+    3. ⚡ **STRIDE** – rule-based discovery
+    4. 📊 **Scoring** – impact × likelihood
+    5. 🛡️ **Controls** – OWASP-mapped
+    6. ⚖️ **Residual risk** – what remains
+    7. 🔁 **Review** – owners and triggers
     """)
     st.markdown("---")
 
     if st.session_state.selected_workshop:
         ws_name = WORKSHOPS.get(st.session_state.selected_workshop,{}).get("name","")
-        step_names = {1:"Design",2:"Zones",3:"STRIDE Rules",4:"Attack Tree",5:"Identify",6:"Assess",7:"Complete"}
+        step_names = {p: v[0] for p, v in PAGES.items()}
         cur_step_name = step_names.get(st.session_state.current_step,"")
         ws_level = WORKSHOPS.get(st.session_state.selected_workshop,{}).get("level","")
         st.markdown(f"""
@@ -2487,7 +3584,7 @@ with st.sidebar:
                     border-radius:8px;padding:10px 12px;margin:6px 0">
           <div style="font-size:0.7em;text-transform:uppercase;letter-spacing:1.5px;color:#4FC3F7;margin-bottom:4px">NOW STUDYING</div>
           <div style="font-weight:700;font-size:0.92em;color:#E8F4FD">{ws_name}</div>
-          <div style="font-size:0.78em;color:#90CAF9;margin-top:2px">{ws_level} · Step: {cur_step_name}</div>
+          <div style="font-size:0.78em;color:#90CAF9;margin-top:2px">{ws_level} · {cur_step_name}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -2635,7 +3732,7 @@ if not st.session_state.selected_workshop:
         st.markdown("---")
 
     # ── Learning journey tabs ──────────────────────────────────────────────
-    home_tabs = st.tabs(["🗺️ Learning Path", "🧠 What You'll Master", "📋 The 4-Step Method", "🏆 Skill Tree"])
+    home_tabs = st.tabs(["🗺️ Learning Path", "🧠 What You'll Master", "📋 The 7-Stage Process", "🏆 Skill Tree"])
 
     with home_tabs[0]:
         st.markdown("### Your Journey from Novice to Expert")
@@ -2643,7 +3740,8 @@ if not st.session_state.selected_workshop:
         <div class="info-box">
         This lab uses the <strong>Infosec Institute 4-Step Methodology</strong> — the same framework used
         by Microsoft, OWASP, and enterprise security teams. Each workshop adds a new layer of complexity,
-        building on what you've learned before.
+        building on what you've learned before.<br><br>
+        Every workshop follows the same <strong>7 stages</strong>: Scope → DFD → STRIDE → Scoring → Controls → Residual risk → Review.
         </div>
         """, unsafe_allow_html=True)
 
@@ -2729,7 +3827,19 @@ if not st.session_state.selected_workshop:
                     cols_sk[i%2].markdown(f"✓ {t}")
 
     with home_tabs[2]:
-        st.markdown("### The 4-Step Infosec Threat Modeling Methodology")
+        st.markdown("### The 7 stages you follow in every workshop")
+        st.markdown("""
+| Stage | What you produce | Where the Infosec 4-step method fits |
+|---|---|---|
+| 1. 📐 **Scope** | System in scope, must-do / must-never rules, assumptions, exclusions, measurable goals | — (added up front) |
+| 2. 🗺️ **DFD** | Data-flow diagram, trust boundaries, zones of trust (0–9) | Step 1 *Design* + Step 2 *Zones of Trust* |
+| 3. ⚡ **STRIDE** | Specific threats derived with the zone-direction rules (plus an attack tree) | Step 3 *Discover threats* |
+| 4. 📊 **Scoring** | Impact × likelihood on a 1–3 scale → risk score 1–9, prioritised register | — (added) |
+| 5. 🛡️ **Controls** | Guardrails, filtering, access rules and monitoring, mapped to OWASP | Step 4 *Mitigations* |
+| 6. ⚖️ **Residual risk** | Risk after controls, accept / reduce / transfer / avoid, open questions | — (added) |
+| 7. 🔁 **Review** | Owner, review cadence, full-workshop and update triggers | — (added) |
+""")
+        st.markdown("### The Infosec 4-step method in detail")
         steps_detail = [
             ("1", "Design the Threat Model", "#E3F2FD", "#1565C0",
              "Create a Data Flow Diagram (DFD) that captures the complete system architecture.",
@@ -2875,56 +3985,48 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Step progress bar — compact horizontal stepper ────────────────────────
-_step_defs = [
-    (1,   "1","Design",      "🏗"),
-    (2,   "2","Zones",       "🏷"),
-    (3,   "3","STRIDE Rules","⚡"),
-    (4,   "4","Attack Tree", "🌳"),
-    (5,   "5","Identify",    "🎯"),
-    (6,   "6","Assess",      "📊"),
-    (7,   "7","Complete",    "🏆"),
-]
-step_html_parts = []
-for val, num, label, icon in _step_defs:
-    if st.session_state.current_step > val:
-        bg, fg, ring = "#1B5E20","white","#43A047"
-        content = f"✓"
-    elif st.session_state.current_step == val:
-        bg, fg, ring = "#0D1B2A","white","#4FC3F7"
-        content = num
+# ── Stage tracker: Scope → DFD → STRIDE → Scoring → Controls → Residual risk → Review ──
+_page = int(st.session_state.current_step)
+_page_name, _stage_id = PAGES.get(_page, ("", "scope"))
+_stage_idx = STAGE_IDS.index(_stage_id)
+_parts = []
+for _i, (_sid, _label, _icon) in enumerate(STAGES):
+    if _i < _stage_idx:
+        _bg, _fg, _ring, _content, _lc = "#1B5E20", "white", "#43A047", "✓", "#1B5E20"
+    elif _i == _stage_idx:
+        _bg, _fg, _ring, _content, _lc = "#0D1B2A", "white", "#4FC3F7", _icon, "#0D1B2A"
     else:
-        bg, fg, ring = "#ECEFF1","#78909C","#B0BEC5"
-        content = num
-    step_html_parts.append(
-        f'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;min-width:56px">' +
-        f'<div style="width:28px;height:28px;border-radius:50%;background:{bg};color:{fg};' +
-        f'border:2px solid {ring};display:flex;align-items:center;justify-content:center;' +
-        f'font-family:Sora,Arial;font-weight:700;font-size:11px">{content}</div>' +
-        f'<div style="font-family:DM Sans,Arial;font-size:9.5px;color:{"#1B5E20" if st.session_state.current_step>val else ("#0D1B2A" if st.session_state.current_step==val else "#90A4AE")};font-weight:{"700" if st.session_state.current_step==val else "400"};text-align:center">{label}</div>' +
-        '</div>'
-    )
-
-connector = '<div style="flex:1;height:2px;background:#E0E7EF;margin-top:14px;min-width:8px"></div>'
-step_html = connector.join(step_html_parts)
-
-st.markdown(
-    f'<div style="display:flex;align-items:flex-start;gap:0;padding:10px 0 6px 0;overflow-x:auto">{step_html}</div>',
-    unsafe_allow_html=True
-)
-st.progress(min(max(int(st.session_state.current_step), 1), 7) / 7)
+        _bg, _fg, _ring, _content, _lc = "#ECEFF1", "#78909C", "#B0BEC5", str(_i + 1), "#78909C"
+    _parts.append(
+        '<div style="display:flex;flex-direction:column;align-items:center;gap:3px;min-width:64px">'
+        f'<div style="width:30px;height:30px;border-radius:50%;background:{_bg};color:{_fg};border:2px solid {_ring};'
+        f'display:flex;align-items:center;justify-content:center;font-family:Sora,Arial;font-weight:700;font-size:12px">{_content}</div>'
+        f'<div style="font-family:DM Sans,Arial;font-size:10px;color:{_lc};font-weight:{700 if _i == _stage_idx else 500};text-align:center">{_label}</div></div>')
+_conn = '<div style="flex:1;height:2px;background:#E0E7EF;margin-top:15px;min-width:8px"></div>'
+st.markdown(f'<div style="display:flex;align-items:flex-start;padding:10px 0 4px 0;overflow-x:auto">{_conn.join(_parts)}</div>',
+            unsafe_allow_html=True)
+st.caption(f"Stage {_stage_idx + 1} of {len(STAGES)} · **{STAGES[_stage_idx][1]}** — {_page_name}")
+st.progress(min(max(_page, 1), 13) / 13)
 st.markdown("---")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 1: DESIGN – SYSTEM OVERVIEW + HIGH-LEVEL DFD
+# PAGE 1 · STAGE 1 SCOPE (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
 if st.session_state.current_step == 1:
-    st.header("Step 1: Design the Threat Model")
+    render_scope_page()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE 2 · STAGE 2 DFD — DRAW THE DIAGRAM
+# ─────────────────────────────────────────────────────────────────────────────
+elif st.session_state.current_step == 2:
+    st.header("Step 2: Draw the Data-Flow Diagram (DFD)")
+    scope_reminder()
 
     st.markdown("""
     <div class="methodology-step">
-    <strong>🎨 Infosec Step 1: Design</strong><br>
+    <strong>🗺️ Stage 2 · DFD (Infosec Step 1: Design)</strong><br>
     The first step is to create a Data Flow Diagram (DFD) that identifies all 
     <strong>Interactors</strong> (external entities), <strong>Modules</strong> (processes and data stores), 
     and <strong>Connections</strong> (data flows between them).<br><br>
@@ -3139,7 +4241,7 @@ if st.session_state.current_step == 1:
 
     diag_tabs = st.tabs(["🏗️ Architecture Overview", "🔵 STRIDE Flow Annotations", "📊 Component Table"])
     with diag_tabs[0]:
-        show_architecture_diagram(current_workshop, mode="architecture", key_suffix="s1_arch", editable=True)
+        show_architecture_diagram(current_workshop, mode="architecture", key_suffix="s1_arch", editable=True, default_kind="actor")
     with diag_tabs[1]:
         st.caption("**T** = Tampering risk (data flows from less → more critical zone) | **I** = Information Disclosure (more → less) | **D** = Denial of Service (Zone 0 → any)")
         show_architecture_diagram(current_workshop, mode="stride", key_suffix="s1_stride")
@@ -3170,18 +4272,15 @@ if st.session_state.current_step == 1:
             })
         st.dataframe(pd.DataFrame(flow_df_rows), use_container_width=True, hide_index=True)
 
-    st.markdown("---")
-    if st.button("Next: Apply Zones of Trust ➡️", type="primary", use_container_width=True):
-        st.session_state.current_step = 2
-        save_progress()
-        st.rerun()
+    nav_buttons(1, "⬅️ Back to Scope", 3, "Next: Apply Zones of Trust ➡️", key="p2")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 2: ZONES OF TRUST (INFOSEC STEP 2)
+# PAGE 3 · STAGE 2 DFD — ZONES OF TRUST
 # ─────────────────────────────────────────────────────────────────────────────
-elif st.session_state.current_step == 2:
-    st.header("Step 2: Apply Zones of Trust")
+elif st.session_state.current_step == 3:
+    st.header("Step 2 (cont.): Apply Zones of Trust")
+    scope_reminder()
 
     st.markdown("""
     <div class="methodology-step">
@@ -3423,25 +4522,15 @@ elif st.session_state.current_step == 2:
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⬅️ Back to Design", use_container_width=True):
-            st.session_state.current_step = 1
-            save_progress()
-            st.rerun()
-    with col2:
-        if st.button("Next: STRIDE Rules ➡️", type="primary", use_container_width=True):
-            st.session_state.current_step = 3
-            save_progress()
-            st.rerun()
+    nav_buttons(2, "⬅️ Back to Design", 4, "Next: STRIDE Rules ➡️", key="p3")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3: STRIDE RULES + OWASP MAPPING (INFOSEC STEPS 3 & 4 THEORY)
+# PAGE 4 · STAGE 3 STRIDE — ZONE RULES
 # ─────────────────────────────────────────────────────────────────────────────
-elif st.session_state.current_step == 3:
-    st.header("Step 3: STRIDE Rules + OWASP Mapping")
+elif st.session_state.current_step == 4:
+    st.header("Step 3: STRIDE — Zone Rules & Threat Discovery")
+    scope_reminder()
 
     st.markdown("""
     <div class="methodology-step">
@@ -3692,186 +4781,22 @@ elif st.session_state.current_step == 3:
         </div>
         """, unsafe_allow_html=True)
 
-    # OWASP MAPPING SECTION
-    st.markdown("---")
-    st.subheader("🛡️ Step 4: STRIDE → OWASP Top 10 Mapping")
-
-    st.markdown("""
-    <div class="methodology-step">
-    <strong>🛡️ Infosec Step 4: Explore Mitigations (OWASP)</strong><br>
-    Once threats are identified via STRIDE, you select mitigations from the 
-    <strong>OWASP Top 10</strong> list. The table below shows which OWASP vulnerability 
-    categories map to each STRIDE threat category — this is how professionals translate 
-    threat categories into concrete security controls.
-    </div>
-    """, unsafe_allow_html=True)
-
-    for stride_cat, owasp_info in OWASP_STRIDE_MAP.items():
-        with st.expander(f"🔗 {stride_cat} → {' + '.join(owasp_info['owasp'])}", expanded=False):
-            st.markdown(f"""
-            <div class="owasp-box">
-            <strong>OWASP Mapping:</strong> {', '.join(owasp_info['owasp'])}<br><br>
-            <strong>Why these OWASP categories map to {stride_cat}:</strong><br>
-            {owasp_info['owasp_detail']}
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.markdown("**OWASP-recommended controls:**")
-            for ctrl in owasp_info["controls"]:
-                st.markdown(f"• {ctrl}")
-
-    # PRACTICAL OWASP MAPPING EXERCISE
-    st.markdown("---")
-    st.subheader("🎯 Practical Exercise: Map STRIDE to OWASP Controls")
-
     st.markdown("""
     <div class="practical-task">
-    <strong>Your Task:</strong> For each STRIDE category below, select the correct OWASP Top 10 vulnerability 
-    that maps to it. This tests whether you understand the <em>relationship</em> between threat categories 
-    and vulnerability classifications.
+    <strong>✅ STRIDE rules understood</strong><br>
+    You can now derive STRIDE threats mechanically from the zone relationships on your DFD.
+    Next: build an <strong>attack tree</strong> to see <em>how</em> an attacker would reach the threat, then identify your own threats.
     </div>
     """, unsafe_allow_html=True)
-
-    owasp_exercise = {
-        "Spoofing": {
-            "question": """An e-commerce site lets users log in with just a username — no password required. 
-            An attacker logs in as any customer by guessing their username. 
-            Which OWASP 2021 category does this vulnerability fall under?""",
-            "options": [
-                "A01 — Broken Access Control (users can access other users' orders)",
-                "A07 — Identification and Authentication Failures (broken login = impersonation possible)",
-                "A03 — Injection (attacker injects a fake identity into the session)",
-                "A05 — Security Misconfiguration (the login form is misconfigured)",
-            ],
-            "correct": "A07 — Identification and Authentication Failures (broken login = impersonation possible)",
-            "explanation": "When authentication is weak or absent, attackers can impersonate legitimate users. This is STRIDE Spoofing, enabled by OWASP A07 – Identification and Authentication Failures. The fix is strong MFA + session management."
-        },
-        "Tampering": {
-            "question": """A shopping cart API accepts this URL: /cart?item_id=5&price=1.00
-            A customer changes price=1.00 to price=0.01 and buys a £500 laptop for 1p.
-            Which OWASP category and STRIDE threat does this represent?""",
-            "options": [
-                "Information Disclosure + A02 — they exposed the price field in the URL",
-                "Elevation of Privilege + A01 — the user bypassed pricing access controls",
-                "Tampering + A04 — the system was insecurely designed to trust client-supplied price data",
-                "Spoofing + A07 — the user spoofed a lower price to the server",
-            ],
-            "correct": "Tampering + A04 — the system was insecurely designed to trust client-supplied price data",
-            "explanation": "Never trust client-supplied data for security decisions like pricing. This is Tampering (modifying data in transit/at input). OWASP A04 – Insecure Design covers systems that have no security controls at the design level. The fix: compute price server-side from a trusted catalog, never from user input."
-        },
-        "Information Disclosure": {
-            "question": """A hospital database backup is stored in an S3 bucket. The bucket is private but
-            the backup files are not encrypted. An AWS misconfiguration briefly makes the bucket public.
-            All patient records are readable. Which OWASP category is the ROOT CAUSE?""",
-            "options": [
-                "A05 — Security Misconfiguration (the bucket was briefly public)",
-                "A02 — Cryptographic Failures (data was unencrypted, so exposure = full disclosure)",
-                "A01 — Broken Access Control (the bucket access control was broken)",
-                "A09 — Security Logging and Monitoring Failures (nobody noticed the exposure)",
-            ],
-            "correct": "A02 — Cryptographic Failures (data was unencrypted, so exposure = full disclosure)",
-            "explanation": "A05 (misconfiguration) was the trigger, but the ROOT CAUSE of Information Disclosure is A02 – Cryptographic Failures. If data at rest were encrypted (AES-256), a brief public exposure would expose ciphertext not plaintext. Defense-in-depth means you fix BOTH, but the Information Disclosure STRIDE threat maps to A02 as the primary control."
-        },
-        "Repudiation": {
-            "question": """A bank employee transfers £2M to a fraudulent account. When investigated, 
-            the bank discovers the transaction logs were stored in the same database as transactions — 
-            and had been deleted. The employee denies all knowledge.
-            Which OWASP category enables this Repudiation attack?""",
-            "options": [
-                "A04 — Insecure Design (the system should have been designed with separate audit logs)",
-                "A07 — Authentication Failures (the employee was authenticated, so authentication failed)",
-                "A09 — Security Logging and Monitoring Failures (logs deleted = no audit trail = Repudiation)",
-                "A01 — Broken Access Control (the employee accessed records they shouldn't have)",
-            ],
-            "correct": "A09 — Security Logging and Monitoring Failures (logs deleted = no audit trail = Repudiation)",
-            "explanation": "Repudiation requires both the act AND the absence of proof. A09 – Security Logging and Monitoring Failures is the direct enabler: without immutable, out-of-band audit logs (e.g., append-only SIEM, WORM storage), there is no non-repudiation. A04 is a contributing issue but A09 is the specific OWASP category that maps to STRIDE Repudiation."
-        }
-    }
-
-    with st.form("owasp_mapping_form"):
-        user_owasp_answers = {}
-        for stride_q, q_data in owasp_exercise.items():
-            st.markdown(f"**{stride_q} Scenario:** {q_data['question']}")
-            user_owasp_answers[stride_q] = st.radio(
-                f"Select the correct answer:",
-                q_data["options"],
-                key=f"owasp_q_{stride_q}",
-                index=None
-            )
-            st.markdown("---")
-
-        submitted_owasp = st.form_submit_button(
-            "✅ Submit OWASP Mapping Answers", type="primary", use_container_width=True
-        )
-
-    col_retry_o, _ = st.columns([1,4])
-    with col_retry_o:
-        if st.session_state.get('owasp_mapping_submitted'):
-            if st.button("🔄 Retry OWASP Quiz", key="retry_owasp"):
-                st.session_state.owasp_mapping_submitted = False
-                st.session_state.owasp_mapping_answers = {}
-                st.rerun()
-
-    if submitted_owasp or st.session_state.get('owasp_mapping_submitted'):
-        if submitted_owasp:
-            st.session_state.owasp_mapping_answers = user_owasp_answers
-            st.session_state.owasp_mapping_submitted = True
-            save_progress()
-
-        st.markdown("---")
-        st.subheader("📋 OWASP Mapping Results")
-        owasp_correct = 0
-        for stride_q, q_data in owasp_exercise.items():
-            user_ans = st.session_state.owasp_mapping_answers.get(stride_q, "")
-            is_correct = user_ans == q_data["correct"]
-            if is_correct:
-                owasp_correct += 1
-            css = "correct-answer" if is_correct else "incorrect-answer"
-            icon = "✅" if is_correct else "❌"
-            st.markdown(f"""
-            <div class="{css}">
-            {icon} <strong>{stride_q}</strong><br>
-            Your answer: {user_ans or 'Not answered'}<br>
-            Correct: <strong>{q_data['correct']}</strong><br>
-            <em>{q_data['explanation']}</em>
-            </div>
-            """, unsafe_allow_html=True)
-
-        owasp_pct = owasp_correct / len(owasp_exercise) * 100
-        st.markdown(f"""
-        <div class="{'score-excellent' if owasp_pct>=80 else 'score-good' if owasp_pct>=60 else 'score-fair'}">
-        OWASP Mapping Score: {owasp_correct}/{len(owasp_exercise)} ({owasp_pct:.0f}%)
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("""
-    <div class="practical-task">
-    <strong>✅ Steps 3 & 4 Theory Complete</strong><br>
-    You now know both the <strong>STRIDE rules</strong> (derived from zone relationships) 
-    and the <strong>OWASP controls</strong> that address each STRIDE category.<br>
-    Next: Build an <strong>Attack Tree</strong> to understand <em>how</em> attackers exploit these threats.
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⬅️ Back to Zones", use_container_width=True):
-            st.session_state.current_step = 2
-            save_progress()
-            st.rerun()
-    with col2:
-        if st.button("Next: Build Attack Tree ➡️", type="primary", use_container_width=True):
-            st.session_state.current_step = 4
-            save_progress()
-            st.rerun()
+    nav_buttons(3, "⬅️ Back to Zones", 5, "Next: Build Attack Tree ➡️", key="p4")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 4: ATTACK TREE
+# PAGE 5 · STAGE 3 STRIDE — ATTACK TREE
 # ─────────────────────────────────────────────────────────────────────────────
-elif st.session_state.current_step == 4:
-    st.header("🌳 Step 4: Build an Attack Tree")
+elif st.session_state.current_step == 5:
+    st.header("🌳 Step 3 (cont.): Attack Tree")
+    scope_reminder()
 
     st.markdown("""
     <div class="info-box">
@@ -4024,34 +4949,23 @@ elif st.session_state.current_step == 4:
             becomes unacceptable risk — life-safety requires blocking ALL paths.
             """)
 
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⬅️ Back to STRIDE Rules", use_container_width=True):
-            st.session_state.current_step = 3
-            save_progress()
-            st.rerun()
-    with col2:
-        if st.button("Ready: Identify Threats ➡️", type="primary", use_container_width=True):
-            st.session_state.current_step = 5
-            save_progress()
-            st.rerun()
+    nav_buttons(4, "⬅️ Back to STRIDE Rules", 6, "Ready: Identify Threats ➡️", key="p5")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 5: IDENTIFY THREATS (PRACTICAL STRIDE APPLICATION)
+# PAGE 6 · STAGE 3 STRIDE — IDENTIFY THREATS
 # ─────────────────────────────────────────────────────────────────────────────
-elif st.session_state.current_step == 5:
-    st.header("Step 5: Identify Threats (Practical STRIDE Application)")
+elif st.session_state.current_step == 6:
+    st.header("Step 3 (cont.): Identify Threats with STRIDE")
+    scope_reminder()
 
     st.markdown(f"""
     <div class="info-box">
-    <strong>Applying Steps 3 & 4 of the Infosec Methodology:</strong><br>
-    Now you apply the STRIDE zone-rules to systematically identify threats and then 
-    map them to <strong>OWASP Top 10</strong> controls.<br><br>
-    For each threat: (1) identify the component, (2) apply the zone rule to confirm the STRIDE category,
-    (3) assess likelihood × impact, (4) select OWASP-aligned mitigations.<br><br>
-    <strong>Goal:</strong> Analyze {current_workshop['target_threats']} threats to demonstrate mastery
+    <strong>⚡ Stage 3 · STRIDE — apply the zone rules to your DFD</strong><br>
+    For each threat: (1) pick the <strong>component or flow</strong> affected, (2) apply the zone-direction rule to choose the
+    <strong>STRIDE category</strong>. Be specific — “attacker alters the order total in the API call”, not just “tampering”.<br>
+    Scoring (Stage 4) and controls (Stage 5) come next, using the threats you identify here.<br><br>
+    <strong>Goal:</strong> identify {current_workshop['target_threats']} threats
     </div>
     """, unsafe_allow_html=True)
 
@@ -4080,7 +4994,7 @@ elif st.session_state.current_step == 5:
     """, unsafe_allow_html=True)
     live_tabs = st.tabs(["🏗️ Current Threat Map", "🔵 STRIDE Annotations", "🏗️ Clean Architecture"])
     with live_tabs[0]:
-        show_architecture_diagram(current_workshop, threats=st.session_state.threats, mode="threat", key_suffix="step4_live", editable=True)
+        show_architecture_diagram(current_workshop, threats=st.session_state.threats, mode="threat", key_suffix="step4_live", editable=True, default_kind="threat")
     with live_tabs[1]:
         show_architecture_diagram(current_workshop, threats=st.session_state.threats, mode="stride", key_suffix="step4_stride")
     with live_tabs[2]:
@@ -4102,73 +5016,44 @@ elif st.session_state.current_step == 5:
         """, unsafe_allow_html=True)
 
     with st.form("threat_selection_form"):
-        st.subheader("➕ Analyze a Threat Scenario")
+        st.subheader("➕ Identify a Threat Scenario")
 
         available_threats = remaining_threats if remaining_threats else workshop_threats
-        threat_options = {f"{t['id']}: {t['threat'][:65]}...": t for t in available_threats}
+        threat_options = {f"{t_['id']}: {t_['threat'][:65]}...": t_ for t_ in available_threats}
         if not threat_options:
             st.error("No threats available for this workshop")
             st.stop()
 
         selected_threat_key = st.selectbox(
-            "Choose a threat scenario to analyze:",
-            list(threat_options.keys()),
-            help="Each threat can only be analyzed once. Select from remaining threats."
-        )
+            "Choose a threat scenario to analyze:", list(threat_options.keys()),
+            help="Each threat can only be identified once. Select from the remaining threats.")
         selected_predefined = threat_options[selected_threat_key]
 
-        # Show zone context for the selected threat
         st.markdown(f"""
         <div class="stride-rule-box">
-        <strong>Zone Context for this threat:</strong><br>
-        From zone: <strong>{selected_predefined.get('zone_from', 'N/A')}</strong> → 
-        To zone: <strong>{selected_predefined.get('zone_to', 'N/A')}</strong><br>
-        STRIDE rule applied: <em>{selected_predefined.get('stride_rule_applied', 'N/A')}</em>
+        <strong>Zone context for this threat:</strong><br>
+        From zone: <strong>{selected_predefined.get('zone_from', 'N/A')}</strong> →
+        To zone: <strong>{selected_predefined.get('zone_to', 'N/A')}</strong>
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("---")
-
-        # ── Contextual guidance based on the selected threat ─────────────
-        threat_zone_from  = selected_predefined.get("zone_from", "")
-        threat_zone_to    = selected_predefined.get("zone_to", "")
-        threat_stride_cat = selected_predefined["stride"]
-        threat_owasp      = OWASP_STRIDE_MAP.get(threat_stride_cat, {})
-
-        # Build a minimal valid STRIDE options list:
-        # - The correct answer is always present
-        # - Add 2 plausible distractors based on zone direction
-        distractor_map = {
-            "Tampering":             ["Injection", "Repudiation"],
-            "Spoofing":              ["Elevation of Privilege", "Repudiation"],
-            "Repudiation":           ["Spoofing", "Tampering"],
-            "Information Disclosure":["Tampering", "Denial of Service"],
-            "Denial of Service":     ["Tampering", "Elevation of Privilege"],
-            "Elevation of Privilege":["Spoofing", "Denial of Service"],
-        }
-        # Always show all 6 but highlight guidance for the zone direction
-        all_stride = ["Spoofing", "Tampering", "Repudiation",
-                      "Information Disclosure", "Denial of Service", "Elevation of Privilege"]
-
-        # Zone-direction guidance text
-        if threat_zone_from and threat_zone_to:
-            zone_from_score = next((c.get("zone_score", 3) for c in current_workshop["scenario"]["components"]
-                                    if c["name"] == threat_zone_from.replace(" Zone", "")),
-                                   CRITICALITY_ZONES.get(threat_zone_from, {}).get("score", 3))
-            zone_to_score   = next((c.get("zone_score", 3) for c in current_workshop["scenario"]["components"]
-                                    if c["name"] == threat_zone_to.replace(" Zone", "")),
-                                   CRITICALITY_ZONES.get(threat_zone_to, {}).get("score", 3))
-            if zone_from_score < zone_to_score:
+        zf, zt = selected_predefined.get("zone_from", ""), selected_predefined.get("zone_to", "")
+        comps_ = current_workshop["scenario"]["components"]
+        if zf and zt:
+            fs = next((c.get("zone_score", 3) for c in comps_ if c["name"] == zf.replace(" Zone", "")),
+                      CRITICALITY_ZONES.get(zf, {}).get("score", 3))
+            ts = next((c.get("zone_score", 3) for c in comps_ if c["name"] == zt.replace(" Zone", "")),
+                      CRITICALITY_ZONES.get(zt, {}).get("score", 3))
+            if fs < ts:
                 direction_hint = "⬆ Flow goes **less → more** critical zone → primary risk: **Tampering**"
-            elif zone_from_score > zone_to_score:
+            elif fs > ts:
                 direction_hint = "⬇ Flow goes **more → less** critical zone → primary risk: **Information Disclosure**"
             else:
                 direction_hint = "↔ Flow within the **same zone** → check node-level rules (Spoofing, EoP)"
-            if zone_from_score == 0:
+            if fs == 0:
                 direction_hint += " | Zone-0 source → also watch for **Denial of Service** and **Spoofing**"
         else:
-            direction_hint = "Review the zone labels above to determine the applicable STRIDE rule."
-
+            direction_hint = "Review the zone labels to determine the applicable STRIDE rule."
         st.markdown(f"""
         <div class="stride-rule-box">
         <strong>🧭 Zone-Direction Guidance:</strong> {direction_hint}<br>
@@ -4176,282 +5061,255 @@ elif st.session_state.current_step == 5:
         </div>
         """, unsafe_allow_html=True)
 
-        col1, col2 = st.columns(2)
+        all_options = [c["name"] for c in comps_] + [f"{f['source']} → {f['destination']}" for f in current_workshop["scenario"]["data_flows"]]
+        c_a, c_b = st.columns(2)
+        user_component = c_a.selectbox("Which component/flow is affected?", ["— select —"] + all_options, index=0)
+        user_stride = c_b.selectbox(
+            "STRIDE category — apply the zone-direction rule:",
+            ["— select —", "Spoofing", "Tampering", "Repudiation", "Information Disclosure", "Denial of Service", "Elevation of Privilege"],
+            index=0)
 
-        with col1:
-            st.markdown("### 🎯 Your Analysis")
+        if st.form_submit_button("✅ Record threat & get STRIDE feedback", type="primary", use_container_width=True):
+            errs = []
+            if user_component == "— select —":
+                errs.append("Select a component or data flow")
+            if user_stride == "— select —":
+                errs.append("Select a STRIDE category")
+            if errs:
+                st.error("⚠️ Please complete all selections: " + " · ".join(errs))
+            else:
+                st.session_state.user_answers.append(new_record(user_component, user_stride, selected_predefined))
+                recalc_totals()
+                save_progress()
+                st.rerun()
 
-            # Component options: match real components + flows from this workshop
-            all_components = [comp["name"] for comp in current_workshop["scenario"]["components"]]
-            all_flows = [f"{f['source']} → {f['destination']}"
-                         for f in current_workshop["scenario"]["data_flows"]]
+    render_identified_threats()
 
-            # Try to pre-select the correct component
-            correct_comp = selected_predefined.get("component", "")
-            all_options  = all_components + all_flows
-            default_idx  = all_options.index(correct_comp) if correct_comp in all_options else 0
+    if st.session_state.user_answers and st.button("🏷️ Add my identified threats to the diagram labels", key="w_sync_threats"):
+        n_added = sync_labels_from_analysis(include_controls=False)
+        save_progress()
+        st.rerun()
 
-            user_component = st.selectbox(
-                "Which component/flow is affected?",
-                ["— select —"] + all_options,
-                index=0,
-                help="Identify the component or flow from the threat description above"
+    st.progress(min(len(st.session_state.user_answers) / current_workshop['target_threats'], 1.0))
+    if len(st.session_state.user_answers) < current_workshop['target_threats']:
+        st.info(f"⚠️ {current_workshop['target_threats'] - len(st.session_state.user_answers)} more threats needed to complete this workshop.")
+    else:
+        st.success("✅ All required threats identified — continue to scoring.")
+
+    nav_buttons(5, "⬅️ Back to Attack Tree", 7, "Next: Score the risk ➡️", bool(st.session_state.user_answers),
+                "Identify at least one threat first.", key="p6")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE 7 · STAGE 4 SCORING (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+elif st.session_state.current_step == 7:
+    render_scoring_page()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE 8 · STAGE 5 CONTROLS — OWASP MAPPING
+# ─────────────────────────────────────────────────────────────────────────────
+elif st.session_state.current_step == 8:
+    st.header("Step 5 (start): Map STRIDE Threats to Controls")
+    scope_reminder()
+    st.markdown("""
+    <div class="methodology-step">
+    <strong>🛡️ Stage 5 · Controls</strong><br>
+    Before you pick controls for your own threats, learn how each STRIDE category maps to OWASP Top 10 risks and to the
+    four control categories: <strong>🧱 Guardrails</strong>, <strong>🧪 Filtering</strong>, <strong>🔑 Access rules</strong>
+    and <strong>📡 Monitoring</strong>.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # OWASP MAPPING SECTION
+    st.markdown("---")
+    st.subheader("🛡️ STRIDE → OWASP Top 10 Mapping")
+
+    st.markdown("""
+    <div class="methodology-step">
+    <strong>🛡️ Infosec Step 4: Explore Mitigations (OWASP)</strong><br>
+    Once threats are identified via STRIDE, you select mitigations from the 
+    <strong>OWASP Top 10</strong> list. The table below shows which OWASP vulnerability 
+    categories map to each STRIDE threat category — this is how professionals translate 
+    threat categories into concrete security controls.
+    </div>
+    """, unsafe_allow_html=True)
+
+    for stride_cat, owasp_info in OWASP_STRIDE_MAP.items():
+        with st.expander(f"🔗 {stride_cat} → {' + '.join(owasp_info['owasp'])}", expanded=False):
+            st.markdown(f"""
+            <div class="owasp-box">
+            <strong>OWASP Mapping:</strong> {', '.join(owasp_info['owasp'])}<br><br>
+            <strong>Why these OWASP categories map to {stride_cat}:</strong><br>
+            {owasp_info['owasp_detail']}
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("**OWASP-recommended controls:**")
+            for ctrl in owasp_info["controls"]:
+                st.markdown(f"• {ctrl}")
+
+    # PRACTICAL OWASP MAPPING EXERCISE
+    st.markdown("---")
+    st.subheader("🎯 Practical Exercise: Map STRIDE to OWASP Controls")
+
+    st.markdown("""
+    <div class="practical-task">
+    <strong>Your Task:</strong> For each STRIDE category below, select the correct OWASP Top 10 vulnerability 
+    that maps to it. This tests whether you understand the <em>relationship</em> between threat categories 
+    and vulnerability classifications.
+    </div>
+    """, unsafe_allow_html=True)
+
+    owasp_exercise = {
+        "Spoofing": {
+            "question": """An e-commerce site lets users log in with just a username — no password required. 
+            An attacker logs in as any customer by guessing their username. 
+            Which OWASP 2021 category does this vulnerability fall under?""",
+            "options": [
+                "A01 — Broken Access Control (users can access other users' orders)",
+                "A07 — Identification and Authentication Failures (broken login = impersonation possible)",
+                "A03 — Injection (attacker injects a fake identity into the session)",
+                "A05 — Security Misconfiguration (the login form is misconfigured)",
+            ],
+            "correct": "A07 — Identification and Authentication Failures (broken login = impersonation possible)",
+            "explanation": "When authentication is weak or absent, attackers can impersonate legitimate users. This is STRIDE Spoofing, enabled by OWASP A07 – Identification and Authentication Failures. The fix is strong MFA + session management."
+        },
+        "Tampering": {
+            "question": """A shopping cart API accepts this URL: /cart?item_id=5&price=1.00
+            A customer changes price=1.00 to price=0.01 and buys a £500 laptop for 1p.
+            Which OWASP category and STRIDE threat does this represent?""",
+            "options": [
+                "Information Disclosure + A02 — they exposed the price field in the URL",
+                "Elevation of Privilege + A01 — the user bypassed pricing access controls",
+                "Tampering + A04 — the system was insecurely designed to trust client-supplied price data",
+                "Spoofing + A07 — the user spoofed a lower price to the server",
+            ],
+            "correct": "Tampering + A04 — the system was insecurely designed to trust client-supplied price data",
+            "explanation": "Never trust client-supplied data for security decisions like pricing. This is Tampering (modifying data in transit/at input). OWASP A04 – Insecure Design covers systems that have no security controls at the design level. The fix: compute price server-side from a trusted catalog, never from user input."
+        },
+        "Information Disclosure": {
+            "question": """A hospital database backup is stored in an S3 bucket. The bucket is private but
+            the backup files are not encrypted. An AWS misconfiguration briefly makes the bucket public.
+            All patient records are readable. Which OWASP category is the ROOT CAUSE?""",
+            "options": [
+                "A05 — Security Misconfiguration (the bucket was briefly public)",
+                "A02 — Cryptographic Failures (data was unencrypted, so exposure = full disclosure)",
+                "A01 — Broken Access Control (the bucket access control was broken)",
+                "A09 — Security Logging and Monitoring Failures (nobody noticed the exposure)",
+            ],
+            "correct": "A02 — Cryptographic Failures (data was unencrypted, so exposure = full disclosure)",
+            "explanation": "A05 (misconfiguration) was the trigger, but the ROOT CAUSE of Information Disclosure is A02 – Cryptographic Failures. If data at rest were encrypted (AES-256), a brief public exposure would expose ciphertext not plaintext. Defense-in-depth means you fix BOTH, but the Information Disclosure STRIDE threat maps to A02 as the primary control."
+        },
+        "Repudiation": {
+            "question": """A bank employee transfers £2M to a fraudulent account. When investigated, 
+            the bank discovers the transaction logs were stored in the same database as transactions — 
+            and had been deleted. The employee denies all knowledge.
+            Which OWASP category enables this Repudiation attack?""",
+            "options": [
+                "A04 — Insecure Design (the system should have been designed with separate audit logs)",
+                "A07 — Authentication Failures (the employee was authenticated, so authentication failed)",
+                "A09 — Security Logging and Monitoring Failures (logs deleted = no audit trail = Repudiation)",
+                "A01 — Broken Access Control (the employee accessed records they shouldn't have)",
+            ],
+            "correct": "A09 — Security Logging and Monitoring Failures (logs deleted = no audit trail = Repudiation)",
+            "explanation": "Repudiation requires both the act AND the absence of proof. A09 – Security Logging and Monitoring Failures is the direct enabler: without immutable, out-of-band audit logs (e.g., append-only SIEM, WORM storage), there is no non-repudiation. A04 is a contributing issue but A09 is the specific OWASP category that maps to STRIDE Repudiation."
+        }
+    }
+
+    with st.form("owasp_mapping_form"):
+        user_owasp_answers = {}
+        for stride_q, q_data in owasp_exercise.items():
+            st.markdown(f"**{stride_q} Scenario:** {q_data['question']}")
+            user_owasp_answers[stride_q] = st.radio(
+                f"Select the correct answer:",
+                q_data["options"],
+                key=f"owasp_q_{stride_q}",
+                index=None
             )
-
-            # STRIDE — always starts blank, no pre-selection
-            user_stride = st.selectbox(
-                "STRIDE Category — apply the zone-direction rule:",
-                ["— select —", "Spoofing", "Tampering", "Repudiation",
-                 "Information Disclosure", "Denial of Service", "Elevation of Privilege"],
-                index=0,
-                help="Use the zone-direction guidance above to derive the correct category"
-            )
-
-            # Likelihood & impact — NOT pre-set; student must assess independently
-            user_likelihood = st.select_slider(
-                "Likelihood — how probable is this attack?",
-                options=["Low", "Medium", "High", "Critical"],
-                value="Low",
-            )
-            user_impact = st.select_slider(
-                "Impact — if exploited, how severe?",
-                options=["Low", "Medium", "High", "Critical"],
-                value="Low",
-            )
-
-        with col2:
-            st.markdown("### 🛡️ OWASP-Aligned Mitigations")
-            st.caption("Select ALL controls that correctly address this threat:")
-
-            if threat_owasp:
-                st.markdown(f"""
-                <div class="owasp-box">
-                <strong>💡 OWASP Mapping for {threat_stride_cat}:</strong><br>
-                {', '.join(threat_owasp['owasp'])}<br>
-                <small>{threat_owasp.get('owasp_detail','')}</small>
-                </div>
-                """, unsafe_allow_html=True)
-
-            # Correct + incorrect options — shuffled but with clear instructions
-            correct_opts   = selected_predefined["correct_mitigations"]
-            incorrect_opts = selected_predefined.get("incorrect_mitigations", [])
-            all_possible   = correct_opts + incorrect_opts
-            # Deterministic shuffle based on threat id (not random each rerun)
-            import hashlib
-            seed_val = int(hashlib.md5(selected_predefined["id"].encode()).hexdigest(), 16) % 10000
-            rng = __import__("random").Random(seed_val)
-            rng.shuffle(all_possible)
-
-            st.markdown(f"*{len(correct_opts)} correct controls, {len(incorrect_opts)} distractors — choose wisely*")
-            user_mitigations = st.multiselect(
-                "Security Controls (select all that apply):",
-                all_possible,
-                help="Only select controls that directly address the STRIDE threat above"
-            )
-
-            # Show component mini-diagram highlighting the affected node
             st.markdown("---")
-            st.markdown("**📍 Component Location in Architecture:**")
-            affected_comp_name = selected_predefined.get("component", "")
-            # Find which zone this component sits in
-            for c in current_workshop["scenario"]["components"]:
-                if c["name"] == affected_comp_name or c["name"] in affected_comp_name:
-                    zone_n = c.get("zone","N/A")
-                    zone_s = c.get("zone_score","?")
-                    zone_col_hex = _zone_hex(zone_n)
-                    zone_str_hex = _zone_stroke(zone_n)
-                    st.markdown(f"""
-                    <div style="background:{zone_col_hex};padding:10px;border-radius:6px;
-                                border:2px solid {zone_str_hex};margin:4px 0">
-                    <strong>{c['name']}</strong> — {c['description']}<br>
-                    Zone: <strong>{zone_n}</strong> (Score: {zone_s})<br>
-                    Type: {c['type'].replace('_',' ').title()}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    break
 
-        st.markdown("---")
-        submitted = st.form_submit_button(
-            "✅ Submit & Get STRIDE Rule Feedback", type="primary", use_container_width=True
+        submitted_owasp = st.form_submit_button(
+            "✅ Submit OWASP Mapping Answers", type="primary", use_container_width=True
         )
 
-        if submitted:
-            # Validate selections — reject placeholder values
-            errors = []
-            if user_component == "— select —":
-                errors.append("Select a component or data flow")
-            if user_stride == "— select —":
-                errors.append("Select a STRIDE category")
-            if errors:
-                st.error("⚠️ Please complete all selections: " + " · ".join(errors))
-            else:
-                user_answer = {
-                    "component": user_component,
-                    "stride": user_stride,
-                    "likelihood": user_likelihood,
-                    "impact": user_impact,
-                    "selected_mitigations": user_mitigations,
-                    "matched_threat_id": selected_predefined["id"]
-                }
-                score, max_score, feedback = calculate_threat_score(user_answer, selected_predefined)
-                st.session_state.total_score += score
-                st.session_state.max_score += max_score
-                st.session_state.user_answers.append({
-                    **user_answer,
-                    "score": score, "max_score": max_score,
-                    "feedback": feedback,
-                    "predefined_threat": selected_predefined
-                })
-                st.session_state.threats.append(user_answer)
-                save_progress()
+    col_retry_o, _ = st.columns([1,4])
+    with col_retry_o:
+        if st.session_state.get('owasp_mapping_submitted'):
+            if st.button("🔄 Retry OWASP Quiz", key="retry_owasp"):
+                st.session_state.owasp_mapping_submitted = False
+                st.session_state.owasp_mapping_answers = {}
                 st.rerun()
 
-    # Show previous answers
-    if st.session_state.user_answers:
+    if submitted_owasp or st.session_state.get('owasp_mapping_submitted'):
+        if submitted_owasp:
+            st.session_state.owasp_mapping_answers = user_owasp_answers
+            st.session_state.owasp_mapping_submitted = True
+            save_progress()
+
         st.markdown("---")
-        st.subheader(f"📊 Your Answers ({len(st.session_state.user_answers)}/{current_workshop['target_threats']})")
+        st.subheader("📋 OWASP Mapping Results")
+        owasp_correct = 0
+        for stride_q, q_data in owasp_exercise.items():
+            user_ans = st.session_state.owasp_mapping_answers.get(stride_q, "")
+            is_correct = user_ans == q_data["correct"]
+            if is_correct:
+                owasp_correct += 1
+            css = "correct-answer" if is_correct else "incorrect-answer"
+            icon = "✅" if is_correct else "❌"
+            st.markdown(f"""
+            <div class="{css}">
+            {icon} <strong>{stride_q}</strong><br>
+            Your answer: {user_ans or 'Not answered'}<br>
+            Correct: <strong>{q_data['correct']}</strong><br>
+            <em>{q_data['explanation']}</em>
+            </div>
+            """, unsafe_allow_html=True)
 
-        for idx, answer in enumerate(st.session_state.user_answers):
-            score_pct = answer["score"] / answer["max_score"] * 100
-            if score_pct >= 80:
-                css, emoji, grade = "correct-answer", "✅", "Excellent"
-            elif score_pct >= 50:
-                css, emoji, grade = "partial-answer", "⚠️", "Partial"
-            else:
-                css, emoji, grade = "incorrect-answer", "❌", "Needs Review"
-
-            pred = answer.get("predefined_threat", {})
-            with st.expander(f"{emoji} Threat {idx+1}: {answer['matched_threat_id']} – {grade} ({score_pct:.0f}%)"):
-                st.markdown(f"""
-                <div class="{css}">
-                    <strong>Your Analysis:</strong><br>
-                    Component: {answer['component']} | STRIDE: {answer['stride']}<br>
-                    Risk: {answer['likelihood']} likelihood × {answer['impact']} impact
-                </div>
-                """, unsafe_allow_html=True)
-
-                # Zone rule explanation
-                st.markdown(f"""
-                <div class="stride-rule-box">
-                <strong>Zone Rule Applied:</strong> {pred.get('stride_rule_applied', 'N/A')}<br>
-                <strong>From zone:</strong> {pred.get('zone_from', 'N/A')} → 
-                <strong>To zone:</strong> {pred.get('zone_to', 'N/A')}
-                </div>
-                """, unsafe_allow_html=True)
-
-                # Score feedback
-                for fb in answer["feedback"]:
-                    if "✓" in fb: st.success(fb)
-                    elif "✗" in fb: st.error(fb)
-                    else: st.warning(fb)
-
-                # OWASP mapping for this threat
-                st.markdown("---")
-                owasp_info = OWASP_STRIDE_MAP.get(pred.get("stride", ""), {})
-                if owasp_info:
-                    st.markdown(f"""
-                    <div class="owasp-box">
-                    <strong>OWASP Mapping for {pred.get('stride', '')}:</strong><br>
-                    {', '.join(owasp_info['owasp'])}<br><br>
-                    {owasp_info['owasp_detail']}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.markdown("**OWASP Controls that apply:**")
-                    for ctrl in owasp_info["controls"][:3]:
-                        st.markdown(f"• {ctrl}")
-
-                # Learning content — rich format
-                st.markdown("---")
-                exp  = pred.get('explanation','')
-                risk = pred.get('why_this_risk','')
-                ctrl = pred.get('why_these_controls','')
-                rw   = pred.get('real_world','')
-                comp_str = pred.get('compliance','')
-                stride_cat2 = pred.get('stride','')
-                owasp2 = OWASP_STRIDE_MAP.get(stride_cat2,{}).get("owasp",[""])
-                if exp:
-                    st.markdown(f"""
-                    <div style="background:#F0F4F8;border-radius:8px;padding:12px 16px;margin:6px 0">
-                    <strong style="color:#1A3A5C">📖 Explanation</strong><br>
-                    <span style="font-size:0.91em;color:#2C3E50">{exp}</span>
-                    </div>""", unsafe_allow_html=True)
-                if risk or ctrl:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if risk:
-                            st.markdown(f"""
-                            <div style="background:#FFF8E1;border-left:4px solid #F9A825;border-radius:6px;padding:10px 14px;margin:4px 0">
-                            <strong style="color:#E65100;font-size:0.85em">⚖️ WHY THIS RISK LEVEL</strong><br>
-                            <span style="font-size:0.88em;color:#444">{risk}</span>
-                            </div>""", unsafe_allow_html=True)
-                    with c2:
-                        if ctrl:
-                            st.markdown(f"""
-                            <div style="background:#E8F5E9;border-left:4px solid #43A047;border-radius:6px;padding:10px 14px;margin:4px 0">
-                            <strong style="color:#1B5E20;font-size:0.85em">🛡️ WHY THESE CONTROLS</strong><br>
-                            <span style="font-size:0.88em;color:#444">{ctrl}</span>
-                            </div>""", unsafe_allow_html=True)
-                if rw:
-                    st.markdown(f"""
-                    <div style="background:linear-gradient(135deg,#0D1B2A,#102040);color:#C8DCF0;
-                                border-radius:8px;padding:14px 18px;margin:8px 0;border-left:5px solid #5C6BC0">
-                      <div style="font-size:0.7em;font-weight:700;text-transform:uppercase;letter-spacing:2px;
-                                  color:#7986CB;margin-bottom:6px">🌐 REAL-WORLD BREACH</div>
-                      <p style="margin:0 0 8px 0;font-size:0.9em;line-height:1.6">{rw}</p>
-                      <div style="font-size:0.78em;color:#90A4AE">
-                        STRIDE: <strong style="color:#90CAF9">{stride_cat2}</strong>
-                        &nbsp;·&nbsp; OWASP: <strong style="color:#90CAF9">{", ".join(owasp2[:2])}</strong>
-                        &nbsp;·&nbsp; {comp_str}
-                      </div>
-                    </div>""", unsafe_allow_html=True)
-
-    # Progress
-    progress = len(st.session_state.user_answers) / current_workshop['target_threats']
-    st.progress(min(progress, 1.0))
-
-    if len(st.session_state.user_answers) >= current_workshop['target_threats']:
-        final_pct = st.session_state.total_score / st.session_state.max_score * 100
-        grade_css = ("score-excellent" if final_pct >= 90 else "score-good" if final_pct >= 75
-                     else "score-fair" if final_pct >= 60 else "score-poor")
-        grade_msg = ("🏆 Excellent! STRIDE mastery demonstrated!" if final_pct >= 90
-                     else "👍 Good!" if final_pct >= 75 else "📚 Fair – review feedback."
-                     if final_pct >= 60 else "💪 Keep learning!")
+        owasp_pct = owasp_correct / len(owasp_exercise) * 100
         st.markdown(f"""
-        <div class="{grade_css}">
-        {grade_msg} Score: {st.session_state.total_score}/{st.session_state.max_score} ({final_pct:.1f}%)
+        <div class="{'score-excellent' if owasp_pct>=80 else 'score-good' if owasp_pct>=60 else 'score-fair'}">
+        OWASP Mapping Score: {owasp_correct}/{len(owasp_exercise)} ({owasp_pct:.0f}%)
         </div>
         """, unsafe_allow_html=True)
-    else:
-        remaining = current_workshop['target_threats'] - len(st.session_state.user_answers)
-        st.info(f"⚠️ {remaining} more threats needed to complete this workshop.")
 
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⬅️ Back to Attack Tree", use_container_width=True):
-            st.session_state.current_step = 4
-            save_progress()
-            st.rerun()
-    with col2:
-        if st.button("Next: Assessment ➡️", type="primary", use_container_width=True):
-            if st.session_state.user_answers:
-                st.session_state.current_step = 6
-                save_progress()
-                st.rerun()
-            else:
-                st.error("Complete at least one threat analysis first")
+    nav_buttons(7, "⬅️ Back to Scoring", 9, "Next: Select controls ➡️", key="p8")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 6: ASSESS – THREAT-MAPPED DFD + FULL REVIEW
+# PAGE 9 · STAGE 5 CONTROLS — SELECT CONTROLS (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
-elif st.session_state.current_step == 6:
-    st.header("Step 6: Assessment & Threat-Mapped Architecture Review")
+elif st.session_state.current_step == 9:
+    render_controls_page()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE 10 · STAGE 6 RESIDUAL RISK (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+elif st.session_state.current_step == 10:
+    render_residual_page()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE 11 · STAGE 7 REVIEW PLAN (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+elif st.session_state.current_step == 11:
+    render_review_plan_page()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAGE 12 · STAGE 7 REVIEW — ASSESSMENT & REPORT
+# ─────────────────────────────────────────────────────────────────────────────
+elif st.session_state.current_step == 12:
+    st.header("Step 7 (cont.): Assessment & Threat-Mapped Architecture Review")
+    recalc_totals()
+    scope_reminder()
 
     if not st.session_state.user_answers:
         st.warning("No answers to assess")
         if st.button("⬅️ Back"):
-            st.session_state.current_step = 5; save_progress(); st.rerun()
+            go_page(6)
         st.stop()
 
     final_pct = st.session_state.total_score / st.session_state.max_score * 100
@@ -4495,58 +5353,9 @@ elif st.session_state.current_step == 6:
         show_architecture_diagram(current_workshop, threats=st.session_state.threats,
                                   mode="zones", key_suffix="s6_zones")
 
-    # Full methodology review
     st.markdown("---")
-    st.subheader("📋 4-Step Methodology Review")
-
-    step_tabs = st.tabs(["Step 1: Design", "Step 2: Zones", "Step 3: STRIDE", "Step 4: OWASP"])
-
-    with step_tabs[0]:
-        st.markdown("### ✅ Step 1: Design Review")
-        scenario = current_workshop["scenario"]
-        st.markdown(f"**System:** {scenario['title']} – {scenario['description']}")
-        comps_df = pd.DataFrame([{
-            "Component": c["name"], "Type": c["type"].replace("_", " ").title(),
-            "Description": c["description"]
-        } for c in scenario["components"]])
-        st.dataframe(comps_df, use_container_width=True, hide_index=True)
-
-    with step_tabs[1]:
-        st.markdown("### ✅ Step 2: Zone Labels Applied")
-        zone_df = pd.DataFrame([{
-            "Component": c["name"],
-            "Zone": c.get("zone", "N/A"),
-            "Score (0-9)": c.get("zone_score", "?"),
-            "STRIDE Focus": CRITICALITY_ZONES.get(c.get("zone", ""), {}).get("stride_applicability", "")[:60]
-        } for c in scenario["components"]])
-        st.dataframe(zone_df, use_container_width=True, hide_index=True)
-
-    with step_tabs[2]:
-        st.markdown("### ✅ Step 3: STRIDE Threats Identified")
-        for answer in st.session_state.user_answers:
-            pred = answer.get("predefined_threat", {})
-            pct = answer["score"] / answer["max_score"] * 100
-            css = "correct-answer" if pct >= 80 else "partial-answer" if pct >= 50 else "incorrect-answer"
-            st.markdown(f"""
-            <div class="{css}">
-            <strong>{answer['matched_threat_id']}</strong>: {pred.get('threat', '')}<br>
-            STRIDE: {answer['stride']} | Zone rule: {pred.get('stride_rule_applied', 'N/A')}<br>
-            Score: {answer['score']}/{answer['max_score']} ({pct:.0f}%)
-            </div>
-            """, unsafe_allow_html=True)
-
-    with step_tabs[3]:
-        st.markdown("### ✅ Step 4: OWASP Control Mapping")
-        for stride_cat, owasp_info in OWASP_STRIDE_MAP.items():
-            # Check if any of user's answers used this STRIDE category
-            user_used = any(a["stride"] == stride_cat for a in st.session_state.user_answers)
-            icon = "✅" if user_used else "⭕"
-            st.markdown(f"""
-            <div class="owasp-box">
-            {icon} <strong>{stride_cat}</strong> → {', '.join(owasp_info['owasp'])}<br>
-            Key controls: {'; '.join(owasp_info['controls'][:2])}
-            </div>
-            """, unsafe_allow_html=True)
+    st.subheader("📋 7-Stage Threat Model Review")
+    render_stage_review()
 
     # PERFORMANCE
     st.markdown("---")
@@ -4606,6 +5415,9 @@ elif st.session_state.current_step == 6:
         "OWASP": ", ".join(a.get("predefined_threat", {}).get("owasp_categories", [])),
         "Likelihood": a["likelihood"],
         "Impact": a["impact"],
+        "Risk_1to9": rec_risk(a) or "",
+        "Residual_1to9": rec_residual(a) or "",
+        "Decision": (a.get("residual") or {}).get("decision", ""),
         "Score": f"{a['score']}/{a['max_score']} ({a['score']/a['max_score']*100:.0f}%)",
         "Mitigations": ", ".join(a.get('selected_mitigations', []))
     } for a in st.session_state.user_answers])
@@ -4623,7 +5435,7 @@ elif st.session_state.current_step == 6:
             with st.spinner("Building PDF..."):
                 user_pdf = generate_user_threat_model_pdf(
                     current_workshop, st.session_state.user_answers,
-                    st.session_state.total_score, st.session_state.max_score
+                    st.session_state.total_score, st.session_state.max_score, extra=build_pdf_extra()
                 )
             if user_pdf:
                 st.download_button(
@@ -4652,20 +5464,14 @@ elif st.session_state.current_step == 6:
             else:
                 st.error("PDF generation failed")
 
-    st.markdown("---")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("⬅️ Back to Threats", use_container_width=True):
-            st.session_state.current_step = 5; save_progress(); st.rerun()
-    with col2:
-        if st.button("Complete Workshop ➡️", type="primary", use_container_width=True):
-            st.session_state.current_step = 7; save_progress(); st.rerun()
+    nav_buttons(11, "⬅️ Back to Review plan", 13, "Complete Workshop ➡️", key="p12")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 7: COMPLETE
+# PAGE 13 · STAGE 7 REVIEW — COMPLETE
 # ─────────────────────────────────────────────────────────────────────────────
-elif st.session_state.current_step == 7:
+elif st.session_state.current_step == 13:
+    recalc_totals()
     # Mark completed
     if st.session_state.selected_workshop not in st.session_state.completed_workshops:
         st.session_state.completed_workshops.add(st.session_state.selected_workshop)
@@ -4715,32 +5521,10 @@ elif st.session_state.current_step == 7:
     correct_ct = sum(1 for a in st.session_state.user_answers if a["score"]/a["max_score"] >= 0.8)
     c5.metric("Correct", f"{correct_ct}/{len(st.session_state.user_answers)}")
 
-    # ── 4-step mastery review ───────────────────────────────────────────────
+    # ── 7-stage mastery review ──────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("📋 4-Step Methodology Mastery Summary")
-
-    steps_done = [
-        ("🏗️", "Step 1 — Design (DFD)", True, "Identified all interactors, modules, connections and trust boundaries"),
-        ("🏷️", "Step 2 — Zones of Trust", st.session_state.get('zone_labelling_done', False), "Labelled every component with a criticality zone (0–9 scale)"),
-        ("⚡", "Step 3 — STRIDE Rules", st.session_state.get('stride_rules_submitted', False), "Applied zone-direction rules to derive STRIDE threat categories"),
-        ("🛡️", "Step 4 — OWASP Controls", st.session_state.get('owasp_mapping_submitted', False), "Mapped STRIDE threats to OWASP Top 10 mitigations"),
-        ("🎯", "Practical Threat Analysis", len(st.session_state.user_answers) > 0,
-         f"Analysed {len(st.session_state.user_answers)} threat scenarios with scoring feedback"),
-    ]
-    for icon, label, done, detail in steps_done:
-        bg   = "linear-gradient(135deg,#E8F5E9,#F1F8E9)" if done else "#F5F5F5"
-        clr  = "#2E7D32" if done else "#9E9E9E"
-        mark = "✅" if done else "⭕"
-        st.markdown(f"""
-        <div style="background:{bg};border-left:4px solid {clr};border-radius:8px;
-                    padding:12px 16px;margin:6px 0;display:flex;align-items:center;gap:12px">
-          <span style="font-size:1.3em">{mark}</span>
-          <div>
-            <strong style="color:{clr}">{icon} {label}</strong><br>
-            <span style="font-size:0.85em;color:#555">{detail}</span>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+    st.subheader("📋 7-Stage Threat Modeling Summary")
+    render_stage_summary()
 
     # ── Skills unlocked ─────────────────────────────────────────────────────
     ws_skill_map = {
@@ -4804,12 +5588,12 @@ elif st.session_state.current_step == 7:
                 save_progress()
                 st.rerun()
     else:
-        st.success("🏆 **All Workshops Completed! Full 4-Step Methodology Mastered!**")
+        st.success("🏆 **All Workshops Completed! Full 7-Stage Process Mastered!**")
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("📊 Review Assessment", use_container_width=True):
-            st.session_state.current_step = 6; save_progress(); st.rerun()
+            go_page(12)
     with col2:
         if st.button("🏠 Return to Home", use_container_width=True):
             st.session_state.selected_workshop = None
@@ -4818,4 +5602,4 @@ elif st.session_state.current_step == 7:
             st.rerun()
 
 st.markdown("---")
-st.caption("STRIDE Threat Modeling Learning Lab | 4-Step Infosec Methodology: Design → Zones → STRIDE → OWASP Controls")
+st.caption("STRIDE Threat Modeling Learning Lab | Scope → DFD → STRIDE → Scoring → Controls → Residual risk → Review")
