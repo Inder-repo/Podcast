@@ -1936,7 +1936,7 @@ MODE_TITLES = {
 
 
 def render_architecture_svg(workshop_config, highlighted_threats=None, mode="architecture", annotations=None,
-                            out_of_scope=(), risk_map=None, ctrl_map=None, stride_map=None, mitre_map=None):
+                            out_of_scope=(), risk_map=None, ctrl_map=None, stride_map=None, mitre_map=None, flat=False, reveal_cross=True):
     highlighted_threats = highlighted_threats or []
     annotations = annotations or []
     oos = set(out_of_scope or ())
@@ -1952,12 +1952,15 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
     lay = layout_tree(workshop_config)
     leaves, groups = lay["leaves"], lay["groups"]
 
-    show_groups = mode != "dfd"
-    trust_mode = mode in TRUST_MODES
-    show_ids = mode in ID_MODES
-    dfd_shapes = mode == "dfd"
+    # layers: `flat` = elements + flows only (no boundaries, zones or crossings), used before Step 4
+    show_groups = mode != "dfd" and not flat
+    trust_mode = mode in TRUST_MODES and not flat
+    show_ids = mode in ID_MODES or flat
+    dfd_shapes = mode != "architecture"                      # one shape language (DFD notation) in every step
+    zone_chips = mode not in ("dfd", "architecture", "scope", "boundaries") and not flat
     actors = [a for a in annotations if a["kind"] == "actor"] if mode not in ("dfd",) else []
-    others = [a for a in annotations if a["kind"] != "actor"] if mode != "dfd" else []
+    others = ([a for a in annotations if a["kind"] != "actor"] if mode != "dfd"
+              else [a for a in annotations if a["kind"] == "asset"])
     by_target = {}
     for it in others:
         by_target.setdefault(it.get("target"), []).append(it)
@@ -2054,7 +2057,7 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
         f, key = e["f"], e["key"]
         src, dst = f["source"], f["destination"]
         is_thr = key in threat_flows
-        crossing = bool(e["crossed"])
+        crossing = bool(e["crossed"]) and reveal_cross
         col, mk, sw, dash = "#48453E", "mk-n", 1.8, ""
         if trust_mode and crossing:
             col, mk, sw, dash = "#A82B2B", "mk-r", 2.1, ' stroke-dasharray="7,4"'
@@ -2086,7 +2089,7 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
                             "data": f.get("data", "") or "", "proto": f.get("protocol", "")})
 
     # crossing markers
-    if trust_mode:
+    if trust_mode and reveal_cross:
         gmap = {g["name"]: g for g in groups}
         for e in edges:
             for gname in e["crossed"]:
@@ -2163,7 +2166,7 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
         s.append(f'<text x="{cx}" y="{yb + 11}" text-anchor="middle" class="t-desc" style="fill:{dcol}">{_xml(_trunc(desc, 32))}</text>')
         if show_ids:
             s.append(f'<text x="{x0 + 6}" y="{y0 + 11}" class="t-id">{eid.get(name, "")}</text>')
-        if mode not in ("dfd", "architecture"):
+        if zone_chips:
             s.append(f'<rect x="{cx - 16}" y="{y0 + h - 7}" width="32" height="14" rx="7" fill="{zs["stroke"]}"/>'
                      f'<text x="{cx}" y="{y0 + h + 3}" text-anchor="middle" class="t-zone">Z{_xml(comp.get("zone_score", 0))}</text>')
         if is_thr:
@@ -2247,7 +2250,7 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
                        ty + (24 if extras else 7)])
         L["anchor"] = (lx, ty)
         if txt:
-            tip = f"{key} · {base}" + (f" · {L['proto']}" if L["proto"] else "") + (f" · crosses: {', '.join(L['crossed'])}" if L["crossed"] else "")
+            tip = f"{key} · {base}" + (f" · {L['proto']}" if L["proto"] else "") + (f" · crosses: {', '.join(L['crossed'])}" if (L["crossed"] and reveal_cross and not flat and mode not in ("dfd", "scope")) else "")
             s.append(f'<g><title>{_xml(tip)}</title><rect x="{lx - lw / 2:.1f}" y="{ty - 9:.1f}" width="{lw:.1f}" height="14" rx="4" fill="white" stroke="#D8D6D3" stroke-width="0.8"/>'
                      f'<text x="{lx:.1f}" y="{ty + 1:.1f}" text-anchor="middle" class="t-edge" fill="{L["col"]}">{_xml(txt)}</text></g>')
         bx, by = lx - total / 2, ty + 19
@@ -2396,13 +2399,20 @@ def render_architecture_svg(workshop_config, highlighted_threats=None, mode="arc
     items = [(ic_shape_ext, "External entity"), (ic_shape_proc, "Process"), (ic_shape_ds, "Data store")]
     if show_groups:
         items.append((ic_boundary, "Trust boundary / environment"))
-    if trust_mode:
+    if trust_mode and reveal_cross:
         items.append((ic_cross, "Boundary crossing"))
-    if mode not in ("dfd", "architecture"):
+    if zone_chips:
         items.append((ic_zone, "Criticality zone (0–9)"))
     if actors or mode == "actors":
         items.append((ic_devil, "Threat actor → entry point"))
-    if mode != "dfd":
+    if mode == "dfd":
+        if others:
+            items.append((ic_badge("asset", "A01"), "Asset"))
+    elif flat:
+        if actors:
+            items.append((ic_badge("actor", "TA01"), "Threat actor"))
+        items += [(ic_badge("asset", "A01"), "Asset"), (ic_badge("threat", "TS01"), "Threat scenario")]
+    else:
         items += [(ic_badge("actor", "TA01"), "Threat actor"), (ic_badge("asset", "A01"), "Asset"),
                   (ic_badge("threat", "TS01"), "Threat scenario"), (ic_badge("control", "C01"), "Control")]
     if mode in ("stride", "mitre"):
@@ -2578,7 +2588,7 @@ DIAGRAM_CAPTIONS = {
 }
 
 
-def show_architecture_diagram(workshop_config, threats=None, mode="architecture", key_suffix="", editable=False, default_kind=None):
+def show_architecture_diagram(workshop_config, threats=None, mode="architecture", key_suffix="", editable=False, default_kind=None, flat=False, reveal_cross=True):
     ws_id = st.session_state.selected_workshop
     items = get_annotations(ws_id)
     oos = get_scope(ws_id)["oos_components"]
@@ -2586,8 +2596,10 @@ def show_architecture_diagram(workshop_config, threats=None, mode="architecture"
     smap = get_stride_map(ws_id) if mode in ("stride", "mitre") else {}
     mmap = _mitre_map() if mode == "mitre" else {}
     svg = render_architecture_svg(workshop_config, highlighted_threats=threats or [], mode=mode, annotations=items,
-                                  out_of_scope=oos, risk_map=risk_map, ctrl_map=ctrl_map, stride_map=smap, mitre_map=mmap)
-    if mode in DIAGRAM_CAPTIONS:
+                                  out_of_scope=oos, risk_map=risk_map, ctrl_map=ctrl_map, stride_map=smap, mitre_map=mmap, flat=flat, reveal_cross=reveal_cross)
+    if mode == "boundaries" and not reveal_cross:
+        st.caption("📐 Trust boundaries — dashed boxes mark where trust changes. Decide which flows cross them; the crossings are highlighted once you check your answer.")
+    elif mode in DIAGRAM_CAPTIONS:
         st.caption("📐 " + DIAGRAM_CAPTIONS[mode])
     m = re.search(r'viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
     est_h = float(m.group(2)) if m else 600
@@ -3411,7 +3423,7 @@ def render_scope_page():
 
     st.markdown("---")
     st.subheader("🗺️ Scope view")
-    show_architecture_diagram(cfg, mode="scope", key_suffix="s1_scope", editable=True, default_kind="asset")
+    show_architecture_diagram(cfg, mode="scope", key_suffix="s1_scope", editable=True, default_kind="asset", flat=True)
 
     st.subheader("✅ Scope checklist")
     for ok, text, req in scope_checks(sc):
@@ -4085,12 +4097,10 @@ def render_identified_threats():
                 (st.success if fb.startswith("✓") else st.error)(fb)
             if rec.get("actors"):
                 st.markdown("**Threat actor(s):** " + ", ".join(rec["actors"]))
-            st.markdown(f"""
-            <div class="stride-rule-box">
-            <strong>Threat scenario:</strong> {pred['threat']}<br>
-            <strong>Zone rule applied:</strong> {pred.get('stride_rule_applied', 'N/A')}<br>
-            <strong>From zone:</strong> {pred.get('zone_from', 'N/A')} → <strong>To zone:</strong> {pred.get('zone_to', 'N/A')}
-            </div>""", unsafe_allow_html=True)
+            _zr = (f"<br><strong>Zone rule applied:</strong> {pred.get('stride_rule_applied', 'N/A')}<br>"
+                   f"<strong>From zone:</strong> {pred.get('zone_from', 'N/A')} → <strong>To zone:</strong> {pred.get('zone_to', 'N/A')}"
+                   if int(st.session_state.current_step) >= 4 else "")
+            st.markdown(f"""<div class="stride-rule-box"><strong>Threat scenario:</strong> {pred['threat']}{_zr}</div>""", unsafe_allow_html=True)
             if pred.get("explanation"):
                 st.markdown(f"""
                 <div style="background:#F5F4F3;border-radius:8px;padding:12px 16px;margin:6px 0">
@@ -4234,52 +4244,57 @@ with st.sidebar:
                 st.caption(f"**Threats:** {ws_config['target_threats']}")
 
     st.markdown("---")
-    with st.expander("⚡ STRIDE Quick Reference"):
-        stride_items = [
-            ("S","Spoofing","#FBD1D5","Identity impersonation — pretending to be someone else","Zone-0 reachable nodes"),
-            ("T","Tampering","#F9DFB8","Data modification — altering data or code","Less→more critical flows"),
-            ("R","Repudiation","#FBF5C8","Denying actions — no proof of who did what","Nodes with Spoofing+Tampering"),
-            ("I","Info Disclosure","#E5F5F3","Data exposure — secrets reaching wrong party","More→less critical flows"),
-            ("D","DoS","#F1E8F2","Availability — crashing or degrading services","Zone-0→any node flows"),
-            ("E","EoP","#EFEFEE","Privilege escalation — gaining unauthorized access","Higher nodes adj to lower"),
-        ]
-        for letter, name, bg, desc, rule in stride_items:
-            st.markdown(f"""
-            <div style="background:{bg};border-radius:6px;padding:8px 10px;margin:3px 0;font-size:0.82em">
-              <strong style="font-size:1em">{letter} — {name}</strong><br>
-              <span style="color:#444">{desc}</span><br>
-              <span style="color:#777;font-size:0.85em">Rule: {rule}</span>
-            </div>
-            """, unsafe_allow_html=True)
+    _lab_step = int(st.session_state.current_step) if st.session_state.selected_workshop else 99
+    _stride_ok, _zone_ok = _lab_step >= 3, _lab_step >= 4     # reference material appears only once its step is reached
+    if _stride_ok:
+        with st.expander("⚡ STRIDE Quick Reference"):
+            stride_items = [
+                ("S","Spoofing","#FBD1D5","Identity impersonation — pretending to be someone else","Zone-0 reachable nodes"),
+                ("T","Tampering","#F9DFB8","Data modification — altering data or code","Less→more critical flows"),
+                ("R","Repudiation","#FBF5C8","Denying actions — no proof of who did what","Nodes with Spoofing+Tampering"),
+                ("I","Info Disclosure","#E5F5F3","Data exposure — secrets reaching wrong party","More→less critical flows"),
+                ("D","DoS","#F1E8F2","Availability — crashing or degrading services","Zone-0→any node flows"),
+                ("E","EoP","#EFEFEE","Privilege escalation — gaining unauthorized access","Higher nodes adj to lower"),
+            ]
+            for letter, name, bg, desc, rule in stride_items:
+                st.markdown(f"""
+                <div style="background:{bg};border-radius:6px;padding:8px 10px;margin:3px 0;font-size:0.82em">
+                  <strong style="font-size:1em">{letter} — {name}</strong><br>
+                  <span style="color:#444">{desc}</span><br>
+                  {'<span style="color:#777;font-size:0.85em">Rule: ' + rule + '</span>' if _zone_ok else ''}
+                </div>
+                """, unsafe_allow_html=True)
 
-    with st.expander("🏷️ Zone Scale (0–9)"):
-        zone_mini = [
-            (0,"Not in Control","#EFEEED","#7F786B"),
-            (1,"Minimal Trust","#CAE4CB","#3E8842"),
-            (3,"Standard App","#FBF5C8","#E9A435"),
-            (5,"Elevated Trust","#F9DFB8","#D55611"),
-            (7,"Critical","#FBD1D5","#BA3434"),
-            (9,"Maximum Security","#F7AF99","#B23D19"),
-        ]
-        for score, label, bg, border in zone_mini:
-            st.markdown(f"""
-            <div style="background:{bg};border-left:3px solid {border};border-radius:4px;
-                        padding:5px 8px;margin:2px 0;font-size:0.8em">
-              <strong>z{score}</strong> — {label}
-            </div>
-            """, unsafe_allow_html=True)
+    if _zone_ok:
+        with st.expander("🏷️ Zone Scale (0–9)"):
+            zone_mini = [
+                (0,"Not in Control","#EFEEED","#7F786B"),
+                (1,"Minimal Trust","#CAE4CB","#3E8842"),
+                (3,"Standard App","#FBF5C8","#E9A435"),
+                (5,"Elevated Trust","#F9DFB8","#D55611"),
+                (7,"Critical","#FBD1D5","#BA3434"),
+                (9,"Maximum Security","#F7AF99","#B23D19"),
+            ]
+            for score, label, bg, border in zone_mini:
+                st.markdown(f"""
+                <div style="background:{bg};border-left:3px solid {border};border-radius:4px;
+                            padding:5px 8px;margin:2px 0;font-size:0.8em">
+                  <strong>z{score}</strong> — {label}
+                </div>
+                """, unsafe_allow_html=True)
 
-    with st.expander("📐 Zone-Direction Rules"):
-        rules = [
-            ("↑ Tampering","Less → More critical zone flow"),
-            ("↓ Info Disclosure","More → Less critical zone flow"),
-            ("💥 DoS","Zone-0 → any node"),
-            ("🎭 Spoofing","Node reachable from Zone-0"),
-            ("🔄 Repudiation","Node where Spoofing + Tampering both apply"),
-            ("⬆ EoP","Higher-zone node adjacent to lower-zone node"),
-        ]
-        for rule, desc in rules:
-            st.markdown(f"**{rule}**: {desc}")
+    if _zone_ok:
+        with st.expander("📐 Zone-Direction Rules"):
+            rules = [
+                ("↑ Tampering","Less → More critical zone flow"),
+                ("↓ Info Disclosure","More → Less critical zone flow"),
+                ("💥 DoS","Zone-0 → any node"),
+                ("🎭 Spoofing","Node reachable from Zone-0"),
+                ("🔄 Repudiation","Node where Spoofing + Tampering both apply"),
+                ("⬆ EoP","Higher-zone node adjacent to lower-zone node"),
+            ]
+            for rule, desc in rules:
+                st.markdown(f"**{rule}**: {desc}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4835,18 +4850,44 @@ def render_dfd_step():
     cfg = current_workshop
     s = cfg["scenario"]
     items = get_annotations(ws)
+    eid = element_ids(s)
     step_header(2, "Data-flow diagram")
 
-    # 2.1 ─ the system as built + where the assets live
-    substep("2.1", "Describe the system and where the assets live",
-            "Start from the system as it is built and deployed: which components exist, where each one runs, and which assets sit where.")
-    show_architecture_diagram(cfg, mode="architecture", key_suffix="s2_arch", editable=True, default_kind="asset")
-    paths = component_boundaries(cfg)
-    st.dataframe(pd.DataFrame([{"Component": c["name"], "Type": KIND_LABEL[c["type"]], "Runs in": " › ".join(paths.get(c["name"], [])),
-                                "What it is": c["description"]} for c in s["components"]]), use_container_width=True, hide_index=True)
+    # 2.1 ─ vocabulary: the four element types
+    substep("2.1", "Learn the four DFD building blocks",
+            "Every DFD uses only these four shapes. Classify each thing in the system as one of them.")
+    sym = {"external_entity": ("Rectangle", "E", "A person or system outside your control that sends or receives data"),
+           "process": ("Circle / oval", "P", "Code that receives, transforms or forwards data"),
+           "datastore": ("Two parallel lines", "D", "Anything that keeps data at rest"),
+           "flow": ("Arrow", "F", "Data moving from one element to another, over a protocol")}
+    rows = []
+    for kind in ("external_entity", "process", "datastore", "flow"):
+        if kind == "flow":
+            here = f"{len(s['data_flows'])} flows (see 2.2)"
+        else:
+            here = ", ".join(c["name"] for c in s["components"] if c["type"] == kind) or "—"
+        rows.append({"Element": KIND_LABEL[kind], "Shape": sym[kind][0], "ID": sym[kind][1] + "n", "What it is": sym[kind][2], "In this system": here})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    st.markdown("**Where do the assets live?** Map each asset from your scope to the component or data flow that holds or carries it. "
-                "This creates asset labels (A01, A02…) on the diagram.")
+    # 2.2 ─ the diagram itself
+    substep("2.2", "Read the data-flow diagram",
+            "Elements and flows only — no boundaries or zones yet. Those are added on top of this same diagram in Step 4.")
+    show_architecture_diagram(cfg, mode="dfd", key_suffix="s2_dfd", editable=True, default_kind="asset", flat=True)
+    with st.expander("📊 Elements and flows with IDs", expanded=False):
+        st.dataframe(pd.DataFrame([{"ID": eid[c["name"]], "Element": c["name"], "Type": KIND_LABEL[c["type"]],
+                                    "Description": c["description"]} for c in s["components"]]), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame([{"ID": eid[_flow_key(f)], "Flow": _flow_key(f), "Data": f["data"], "Protocol": f["protocol"]}
+                                   for f in s["data_flows"]]), use_container_width=True, hide_index=True)
+    with st.expander("🔍 Three questions to ask about every flow", expanded=False):
+        st.markdown("1. **What data** does it carry, and how sensitive is it?\n"
+                    "2. **Which protocol** carries it, and is that protocol encrypted and authenticated?\n"
+                    "3. **Which direction** does it go, and which side starts it?\n\n"
+                    "Keep the answers: you will use them in Steps 3 and 4.")
+
+    # 2.3 ─ assets
+    substep("2.3", "Map your assets onto the diagram",
+            "An asset is what you are protecting. Attach each one from your scope to the element or flow that holds or carries it. "
+            "Asset labels (A01, A02…) appear on the diagram above.")
     targets = [c["name"] for c in s["components"]] + list(dict.fromkeys(_flow_key(f) for f in s["data_flows"]))
     existing = {i.get("origin"): i for i in items if i["kind"] == "asset" and i.get("origin")}
     with st.form("asset_map_form"):
@@ -4868,46 +4909,9 @@ def render_dfd_step():
             save_progress()
             st.rerun()
 
-    # 2.2 ─ the four element types
-    substep("2.2", "Simplify it into four kinds of DFD element",
-            "Every DFD uses only these four building blocks. Classify each thing you draw — the type decides which STRIDE questions apply in Step 3.")
-    sym = {"external_entity": ("Rectangle", "E"), "process": ("Circle / oval", "P"), "datastore": ("Two parallel lines", "D"), "flow": ("Arrow", "F")}
-    what = {"external_entity": "A person or system outside your control that sends or receives data",
-            "process": "Code that receives, transforms or forwards data",
-            "datastore": "Anything that keeps data at rest",
-            "flow": "Data moving between two elements, with a protocol"}
-    rows = []
-    for kind in ("external_entity", "process", "datastore", "flow"):
-        if kind == "flow":
-            ex = "; ".join(_flow_key(f) for f in s["data_flows"][:2]) + (" …" if len(s["data_flows"]) > 2 else "")
-        else:
-            ex = ", ".join(c["name"] for c in s["components"] if c["type"] == kind) or "—"
-        rows.append({"Element": KIND_LABEL[kind], "Symbol": f"{sym[kind][0]} ({sym[kind][1]})", "What it is": what[kind],
-                     "In this system": ex, "STRIDE that can apply": " ".join(STRIDE_PER_ELEMENT[kind])})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    # 2.3 ─ the DFD itself
-    substep("2.3", "Read your data-flow diagram",
-            "IDs: E = external entity, P = process, D = data store, F = data flow. Use these IDs in every later step.")
-    tabs = st.tabs(["🗺️ Data-flow diagram", "📊 Elements & flows (with IDs)"])
-    with tabs[0]:
-        show_architecture_diagram(cfg, mode="dfd", key_suffix="s2_dfd")
-    with tabs[1]:
-        eid = element_ids(s)
-        st.dataframe(pd.DataFrame([{"ID": eid[c["name"]], "Element": c["name"], "Type": KIND_LABEL[c["type"]],
-                                    "Description": c["description"]} for c in s["components"]]), use_container_width=True, hide_index=True)
-        st.dataframe(pd.DataFrame([{"ID": eid[_flow_key(f)], "Flow": _flow_key(f), "Data": f["data"], "Protocol": f["protocol"]}
-                                   for f in s["data_flows"]]), use_container_width=True, hide_index=True)
-    with st.expander("🔍 Four questions to ask about every flow", expanded=False):
-        st.markdown("1. **What data** does it carry, and how sensitive is it?\n"
-                    "2. **Which protocol** is used — is it encrypted and authenticated?\n"
-                    "3. **Who starts it**, and do we trust them?\n"
-                    "4. **What happens** if it is read, changed, replayed or blocked?\n\n"
-                    "Your answers feed straight into STRIDE in the next step.")
-
     n_assets = sum(1 for i in items if i["kind"] == "asset")
-    ok = checkpoint([(n_assets >= 2, f"Map at least two assets to components or flows ({n_assets} mapped)"),
-                     (True, f"DFD ready: {len(s['components'])} elements and {len(s['data_flows'])} data flows identified")])
+    ok = checkpoint([(True, f"DFD ready: {len(s['components'])} elements and {len(s['data_flows'])} data flows"),
+                     (n_assets >= 2, f"Map at least two assets to elements or flows ({n_assets} mapped)")])
     nav_buttons(1, "", 3, "", ok, "Label at least two assets (use the asset map above or the label editor).", key="p2")
 
 
@@ -4954,7 +4958,8 @@ def _stride_mapping_section():
     mapped = sum(1 for r in rows if smap.get(r["key"]))
     st.progress(mapped / len(rows))
     st.caption(f"{mapped}/{len(rows)} elements mapped")
-    show_architecture_diagram(cfg, mode="stride", key_suffix="s3_stride", editable=True, default_kind="threat")
+    st.caption("Same DFD as Step 2. Letters are your STRIDE ticks; elements turn red when a threat scenario is recorded on them.")
+    show_architecture_diagram(cfg, threats=st.session_state.threats, mode="stride", key_suffix="s3_stride", editable=True, default_kind="threat", flat=True)
     return mapped, len(rows)
 
 
@@ -4979,7 +4984,9 @@ def render_stride_step():
 
     substep("3.3", "Write threat scenarios",
             f"Pick a scenario, then say which element it hits and which STRIDE category it is. Goal: {tgt} scenarios. "
-            "Be specific — “attacker alters the order total in the API call”, not just “tampering”.")
+            "Recording a scenario also ticks its category in the map above, so the two stay in sync.")
+    if st.session_state.get("_stride_note"):
+        st.info(st.session_state.pop("_stride_note"))
     _identify_section()
 
     ok = checkpoint([(mapped >= max(1, int(0.6 * total)), f"Map at least 60% of the elements ({mapped}/{total})"),
@@ -4994,16 +5001,18 @@ def _crossing_section():
     ws = st.session_state.selected_workshop
     cfg = current_workshop
     s = cfg["scenario"]
-    show_architecture_diagram(cfg, mode="boundaries", key_suffix="s4_tb")
+    revealed = boundary_checked(ws)
+    show_architecture_diagram(cfg, mode="boundaries", key_suffix="s4_tb", reveal_cross=revealed)
     lay = layout_tree(cfg)
     cross = flow_crossings(cfg)
     eid = element_ids(s)
     rows = []
     for g in sorted(lay["groups"], key=lambda r: (r["depth"], r["x"])):
         inside = [n for n, r in lay["leaves"].items() if g["name"] in r["path"]]
-        n_cross = sum(1 for k, v in cross.items() if g["name"] in v)
-        rows.append({"Boundary": ("   " * g["depth"]) + g["name"], "Trust level": g["trust"] or "—", "Contains": ", ".join(inside),
-                     "Flows crossing it": n_cross})
+        row = {"Boundary": ("   " * g["depth"]) + g["name"], "Trust level": g["trust"] or "—", "Contains": ", ".join(inside)}
+        if revealed:
+            row["Flows crossing it"] = sum(1 for k, v in cross.items() if g["name"] in v)
+        rows.append(row)
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     st.markdown("**Exercise:** select every data flow that crosses at least one boundary. A flow crosses when its two ends sit in different boxes.")
@@ -5065,9 +5074,9 @@ def render_boundaries_step():
     ws = st.session_state.selected_workshop
     step_header(4, "Trust boundaries & zones of trust")
 
-    substep("4.1", "Find the trust boundaries",
-            "A trust boundary is a line where the level of trust changes — device to cloud, internet to your network, your code to a vendor. "
-            "Dashed boxes are boundaries; red dashed flows cross at least one.")
+    substep("4.1", "Draw the trust boundaries on your DFD",
+            "Same elements and flows as Step 2, now with boundaries added. A trust boundary is a line where the level of trust changes — "
+            "device to cloud, internet to your network, your code to a vendor. Decide which flows cross one, then check your answer.")
     _crossing_section()
 
     substep("4.2", "Give every element a zone of trust (0–9)",
@@ -5468,6 +5477,74 @@ def render_stage_review():
             st.markdown(f"**Keeping it alive:** {plan['notes']}")
 
 
+def _tick_stride_map(key, stride_name):
+    """A recorded threat scenario ticks its STRIDE category on that element in the Step 3 map (keeps both views in sync)."""
+    ws = st.session_state.selected_workshop
+    letter = STRIDE_LETTER_OF.get(stride_name)
+    kind = element_kind(current_workshop["scenario"], key)
+    if letter and kind in STRIDE_PER_ELEMENT and letter in STRIDE_PER_ELEMENT[kind]:
+        cur = dict(get_stride_map(ws))
+        have = set(cur.get(key, []))
+        have.add(letter)
+        cur[key] = [l for l in STRIDE_LETTERS if l in have]
+        st.session_state.stride_map[ws] = cur
+    elif letter:
+        st.session_state["_stride_note"] = (f"**{stride_name}** on **{key}** was recorded as a scenario, but it is not ticked in the map: "
+                                            f"{STRIDE_ELEMENT_NOTE.get(kind, '')} Consider which element at the end of the flow the scenario really hits.")
+    for k in [k for k in st.session_state.keys() if str(k).startswith((f"_seed_stride_{ws}", f"w_ed_stride_{ws}"))]:
+        del st.session_state[k]
+
+
+def _zone_rules_reference():
+    """Zone-direction rules plus a worked example computed from the learner's own system."""
+    cfg = current_workshop
+    s = cfg["scenario"]
+    zs = {c["name"]: c.get("zone_score", 0) for c in s["components"]}
+    flows = s["data_flows"]
+    st.dataframe(pd.DataFrame([
+        {"Applies to": "Data flow", "STRIDE": "Tampering", "Rule": "Flows from a lower zone to a higher zone", "Why": "Data from a less trusted place enters a more critical one"},
+        {"Applies to": "Data flow", "STRIDE": "Information disclosure", "Rule": "Flows from a higher zone to a lower zone", "Why": "Sensitive data travels toward a less trusted place"},
+        {"Applies to": "Data flow", "STRIDE": "Denial of service", "Rule": "The source is Zone 0", "Why": "Outsiders can flood whatever they can reach"},
+        {"Applies to": "Element", "STRIDE": "Spoofing", "Rule": "Reachable from a Zone 0 entity", "Why": "Outsiders can pretend to be a legitimate user or system"},
+        {"Applies to": "Element", "STRIDE": "Denial of service", "Rule": "Reachable from a Zone 0 entity", "Why": "Outsiders can exhaust its resources"},
+        {"Applies to": "Element", "STRIDE": "Repudiation", "Rule": "Both Spoofing and Tampering apply", "Why": "Identity can be faked and data changed, so actions leave no trustworthy trace"},
+        {"Applies to": "Element", "STRIDE": "Elevation of privilege", "Rule": "Connected to a lower-zone element", "Why": "Compromising the lower zone may give a path to higher privileges"},
+    ]), use_container_width=True, hide_index=True)
+
+    st.markdown("**Worked example from your system**")
+    shown = []
+    for f in flows:
+        exp = zone_rule_expectation(cfg, f)
+        if exp and not any(set(exp) == set(x[1]) for x in shown):
+            shown.append((f, exp))
+        if len(shown) == 2:
+            break
+    names = {"T": "Tampering", "I": "Information disclosure", "D": "Denial of service"}
+    for f, exp in shown:
+        a, b = zs.get(f["source"], 0), zs.get(f["destination"], 0)
+        direction = "up (less → more critical)" if b > a else "down (more → less critical)" if b < a else "sideways (same zone)"
+        reasons = []
+        if b > a:
+            reasons.append(f"zone {a} → {b} goes **up**, so **Tampering**")
+        if b < a:
+            reasons.append(f"zone {a} → {b} goes **down**, so **Information disclosure**")
+        if a == 0:
+            reasons.append("the source is **Zone 0**, so **Denial of service**")
+        st.markdown(f"- **{_flow_key(f)}** ({f['protocol']}): {f['source']} is zone {a}, {f['destination']} is zone {b}. Direction: {direction}. "
+                    + "; ".join(reasons) + f". Expected: {', '.join(names[l] for l in exp)}.")
+    node = flows[0]["destination"] if flows else None
+    if node:
+        reach0 = any(zs.get(f["source"], 1) == 0 and f["destination"] == node for f in flows)
+        lower = any((f["destination"] == node and zs.get(f["source"], 0) < zs[node]) or (f["source"] == node and zs.get(f["destination"], 0) < zs[node]) for f in flows)
+        incoming_lower = any(f["destination"] == node and zs.get(f["source"], 0) < zs[node] for f in flows)
+        got = [n for n, ok in (("Spoofing", reach0), ("Denial of service", reach0), ("Tampering", incoming_lower),
+                               ("Repudiation", reach0 and incoming_lower), ("Elevation of privilege", lower)) if ok]
+        st.markdown(f"- **Element {node}** (zone {zs[node]}): reachable from Zone 0? {'yes' if reach0 else 'no'}. Receives data from a lower zone? "
+                    f"{'yes' if incoming_lower else 'no'}. Connected to a lower-zone element? {'yes' if lower else 'no'}. "
+                    f"Rules give: {', '.join(got) if got else 'no extra categories from the zone rules'}.")
+    st.caption("Zone rules are a prompt, not a verdict: use them to find categories you missed, then decide whether each one is realistic.")
+
+
 # ═════════════════════════════════════════════════════════════════════════════════════════════
 #  SECTIONS REUSED BY THE STEP PAGES (formerly separate pages)
 # ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -5662,117 +5739,6 @@ def _zones_section():
 
 
 
-def _zone_rules_reference():
-    scenario = current_workshop["scenario"]
-    # WORKED EXAMPLE first — teach before quizzing
-    st.subheader("🎓 Worked Example: How a Professional Derives Threats")
-
-    st.markdown("""
-    <div style="background:#1D1C1A;color:#F3F3F2;padding:20px 24px;
-                border-radius:10px;border-left:5px solid #70D6C8;margin:12px 0">
-    <div style="font-size:0.72em;font-weight:700;text-transform:uppercase;letter-spacing:2px;
-                color:#70D6C8;margin-bottom:10px">📚 WORKED EXAMPLE — READ THIS BEFORE THE QUIZ</div>
-    <p style="margin:0 0 12px 0;font-size:0.95em;color:#DEDDDA">
-    A professional does NOT look at a system and guess threats. They follow a mechanical process.
-    Here is exactly how to think through every flow and node.</p>
-    <hr style="border-color:rgba(255,255,255,0.15);margin:10px 0">
-
-    <strong style="color:#A4E5DC">Scenario:</strong>
-    <span style="color:#DEDDDA"> Customer Browser (Zone 0) → Web Frontend (Zone 1) → Database (Zone 7)</span><br><br>
-
-    <strong style="color:#A4E5DC">Step 1 — Identify the flow direction:</strong><br>
-    <span style="color:#DEDDDA">
-    Flow A: Browser → Frontend = Zone 0 → Zone 1 = score 0 → score 1 = <strong style="color:#F2B45A">GOING UP</strong><br>
-    Flow B: Frontend → Database = Zone 1 → Zone 7 = score 1 → score 7 = <strong style="color:#F2B45A">GOING UP</strong>
-    </span><br><br>
-
-    <strong style="color:#A4E5DC">Step 2 — Apply the zone-direction rules:</strong><br>
-    <span style="color:#DEDDDA">
-    Going UP (less→more critical) = <strong style="color:#F2B45A">TAMPERING</strong> applies<br>
-    Flow A source = Zone 0 (external) = <strong style="color:#F2B45A">DoS + SPOOFING</strong> also apply
-    </span><br><br>
-
-    <strong style="color:#A4E5DC">Step 3 — Check node rules for the destination (Web Frontend):</strong><br>
-    <span style="color:#DEDDDA">
-    Reachable from Zone 0? Yes → <strong style="color:#F2B45A">SPOOFING</strong> applies<br>
-    Connected to lower-zone node (Browser zone 0)? Yes → <strong style="color:#F2B45A">EoP</strong> applies<br>
-    SPOOFING + TAMPERING both apply? Yes → <strong style="color:#F2B45A">REPUDIATION</strong> also applies
-    </span><br><br>
-
-    <strong style="color:#70D6C8">Result for Flow A (Browser→Frontend):</strong>
-    <span style="color:#DEDDDA"> Tampering, DoS, Spoofing</span><br>
-    <strong style="color:#70D6C8">Result for Web Frontend node:</strong>
-    <span style="color:#DEDDDA"> Spoofing, Tampering, Repudiation, DoS, EoP</span><br>
-    <strong style="color:#70D6C8">Result for Flow B (Frontend→Database):</strong>
-    <span style="color:#DEDDDA"> Tampering (1→7 = going up, no Zone 0 source)</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-    # STRIDE RULES REFERENCE TABLE
-    st.subheader("📜 The STRIDE Zone-Direction Rules (Reference)")
-
-    st.markdown("""
-    <div class="stride-rule-box">
-    <strong>Now you know the pattern.</strong> Apply the same logic below:
-    check zone scores, check direction, check Zone-0 status, check node adjacency.
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Flows rules
-    st.markdown("#### 🔗 Rules for Connections (Data Flows)")
-
-    flow_rules_data = [
-        ["Tampering (T)", "Less critical → More critical zone",
-         "Attacker at lower trust injects malicious data flowing into higher-trust system",
-         "Zone 1 (Frontend) → Zone 7 (Database): SQL injection risk"],
-        ["Information Disclosure (I)", "More critical → Less critical zone",
-         "Sensitive data flowing outward may be captured or leaked",
-         "Zone 7 (Database) → Zone 0 (User): PII exposed in API response"],
-        ["Denial of Service (D)", "Zone 0 (External) → Any other zone",
-         "External actors with no trust can flood any entry point they reach",
-         "Zone 0 (User) → Zone 3 (API): Request flooding exhausts resources"]
-    ]
-    for rule_row in flow_rules_data:
-        stride_cat, trigger, rationale, example = rule_row
-        st.markdown(f"""
-        <div class="stride-rule-box">
-        <strong>⚡ {stride_cat}</strong><br>
-        <strong>Applies when:</strong> {trigger}<br>
-        <strong>Why:</strong> {rationale}<br>
-        <strong>Example:</strong> <em>{example}</em>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("#### 🔵 Rules for Nodes (Interactors, Processes, Data Stores)")
-
-    node_rules_data = [
-        ["Spoofing (S)", "Any node reachable by a Zone 0 (Not in Control) entity",
-         "External actors can impersonate legitimate users/systems at any reachable node",
-         "Login page reachable from Internet: Attacker impersonates valid user"],
-        ["Repudiation (R)", "Any node where BOTH Spoofing AND Tampering apply",
-         "If identity can be faked AND data modified, actions can be performed untraceably",
-         "API server with user input: Orders placed, then denied as fake"],
-        ["Denial of Service (D)", "Any node reachable by a Zone 0 entity",
-         "External actors can exhaust resources of any node they can reach",
-         "Public API endpoint: Botnet flood crashes the service"],
-        ["Elevation of Privilege (E)", "Any node connected to a lower-criticality-zone node",
-         "Attacker who compromises lower zone may gain higher-zone capabilities",
-         "Admin API (zone 5) reachable from regular API (zone 3): Privilege escalation"]
-    ]
-    for rule_row in node_rules_data:
-        stride_cat, trigger, rationale, example = rule_row
-        st.markdown(f"""
-        <div class="stride-rule-box">
-        <strong>⚡ {stride_cat}</strong><br>
-        <strong>Applies when:</strong> {trigger}<br>
-        <strong>Why:</strong> {rationale}<br>
-        <strong>Example:</strong> <em>{example}</em>
-        </div>
-        """, unsafe_allow_html=True)
-
-
-
 def _attack_tree_section():
     scenario = current_workshop["scenario"]
     st.markdown("""
@@ -5930,9 +5896,6 @@ def _attack_tree_section():
 
 def _identify_section():
     scenario = current_workshop["scenario"]
-    st.markdown("**Live threat map** — affected elements turn red as you record scenarios.")
-    show_architecture_diagram(current_workshop, threats=st.session_state.threats, mode="threat", key_suffix="s3_live", editable=True, default_kind="threat")
-
     st.markdown("---")
     # Already-analyzed threat IDs — prevents duplicate inflation
     analyzed_ids = {a["matched_threat_id"] for a in st.session_state.user_answers}
@@ -5982,6 +5945,7 @@ def _identify_section():
             else:
                 _rec = new_record(user_component, user_stride, selected_predefined)
                 st.session_state.user_answers.append(_rec)
+                _tick_stride_map(user_component, user_stride)
                 sync_labels_from_analysis(False)
                 recalc_totals()
                 save_progress()
