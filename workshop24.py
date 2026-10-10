@@ -39,11 +39,13 @@ def _get_reportlab():
             TableStyle, TA_CENTER, TA_LEFT)
 
 st.set_page_config(
-    page_title="STRIDE Threat Modeling Learning Lab",
+    page_title="STRIDE Threat Modeling Learning Lab · v2.1",
     page_icon="🔒",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+APP_BUILD = "2026.10.10-workflow-redesign-2.1"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UNLOCK CODES - stored only as salted SHA-256 digests (no plaintext in source).
@@ -2781,7 +2783,7 @@ def generate_user_threat_model_pdf(workshop_config, user_answers, total_score, m
             ['Report Type:', 'User Submission'],
             ['Workshop Level:', workshop_config['level']],
             ['Architecture:', workshop_config.get('architecture_type', 'N/A')],
-            ['Methodology:', '10-Stage Threat Modeling'],
+            ['Methodology:', 'Threat modeling workflow: scope, architecture, DFD, trust boundaries, zones, STRIDE, ATT&CK/CAPEC, risk, controls, residual risk and review'],
             ['Date:', datetime.now().strftime('%Y-%m-%d %H:%M')],
             ['Score:', f"{total_score}/{max_score} ({final_pct:.1f}%)"]
         ]
@@ -3459,7 +3461,7 @@ def render_scope_page():
 def render_scoring_page():
     cfg = current_workshop
     recs = st.session_state.user_answers
-    st.header("Step 7: Score the Risk — Impact × Likelihood")
+    st.header("Stage 10: Score Inherent Risk — Impact × Likelihood")
     scope_reminder()
     st.markdown("""
     <div class="methodology-step">
@@ -3557,7 +3559,7 @@ def render_scoring_page():
 def render_controls_page():
     cfg = current_workshop
     recs = st.session_state.user_answers
-    st.header("Step 8: Pick Controls for the Risks that Matter")
+    st.header("Stage 11: Select and Verify Controls")
     scope_reminder()
     st.markdown("""
     <div class="methodology-step">
@@ -3696,7 +3698,7 @@ def render_residual_page():
     cfg = current_workshop
     recs = [r for r in st.session_state.user_answers if r.get("controlled")]
     oq = get_open_questions()
-    st.header("Step 9: Residual Risk & Open Questions")
+    st.header("Stage 12: Assess Residual Risk and Open Questions")
     scope_reminder()
     st.markdown("""
     <div class="methodology-step">
@@ -3820,7 +3822,7 @@ UPDATE_TRIGGERS = ["A dependency or platform has a major version change", "A com
 def render_review_plan_page():
     ws = st.session_state.selected_workshop
     plan = get_review_plan(ws)
-    st.header("Step 10: Schedule Reviews & Update Triggers")
+    st.header("Stage 13: Schedule Reviews and Update Triggers")
     scope_reminder()
     st.markdown("""
     <div class="methodology-step">
@@ -3891,12 +3893,13 @@ STAGES = [
     ("arch",     "Architecture",     "🏛️"),
     ("dfd",      "DFD",              "🗺️"),
     ("trust",    "Trust boundaries", "🚧"),
-    ("stride",   "STRIDE",           "⚡"),
-    ("mitre",    "ATT&CK",           "🎯"),
-    ("scoring",  "Scoring",          "📊"),
+    ("zones",    "Zones of trust",   "🏷️"),
+    ("stride",   "Threat discovery / STRIDE", "⚡"),
+    ("mitre",    "ATT&CK + CAPEC",   "🎯"),
+    ("scoring",  "Risk scoring",     "📊"),
     ("controls", "Controls",         "🛡️"),
     ("residual", "Residual risk",    "⚖️"),
-    ("review",   "Review",           "🔁"),
+    ("review",   "Review & report",  "🔁"),
 ]
 STAGE_IDS = [s[0] for s in STAGES]
 PAGES = {
@@ -3904,7 +3907,7 @@ PAGES = {
     14: ("Architecture",          "arch"),
     2:  ("Data-flow diagram",     "dfd"),
     15: ("Trust boundaries",      "trust"),
-    3:  ("Zones of trust",        "trust"),
+    3:  ("Zones of trust",        "zones"),
     16: ("Threat actors",         "stride"),
     4:  ("STRIDE rules",          "stride"),
     17: ("STRIDE mapping",        "stride"),
@@ -4148,7 +4151,7 @@ def render_architecture_page():
     <strong>🏛️ Stage 2 · Architecture</strong><br>
     Start from the system as it is <strong>built and deployed</strong>: which components exist, which environment each one runs in
     (device, cloud, partner network…) and which <strong>assets</strong> live where. The next stages simplify this picture into a
-    data-flow diagram, then draw trust boundaries on it. Label the assets you care about now — they will follow you through the whole model.
+    data-flow diagram. This page captures deployment context and assets only; trust boundaries are not assessed here. Label the assets you care about now — they will follow you through the whole model.
     </div>""", unsafe_allow_html=True)
 
     show_architecture_diagram(cfg, mode="architecture", key_suffix="s14_arch", editable=True, default_kind="asset")
@@ -4197,15 +4200,14 @@ def render_trust_boundary_page():
     <div class="methodology-step">
     <strong>🚧 Stage 4 · Trust boundaries</strong><br>
     A trust boundary is a line where the <strong>level of trust changes</strong> — device to cloud, internet to your network, your code to a
-    vendor. Every data flow that crosses one needs authentication, validation and protection, so these crossings are where the STRIDE analysis
-    concentrates. Dashed boxes below are the boundaries; red dashed flows cross at least one (● shows where).
+    vendor. A crossing is a prompt to examine authentication, authorisation, validation and protection appropriate to the data and threat scenario. Crossings help prioritise STRIDE analysis but do not prove a threat by themselves. Dashed boxes are boundaries; red dashed flows cross at least one.
     </div>""", unsafe_allow_html=True)
     show_architecture_diagram(cfg, mode="boundaries", key_suffix="s15_tb")
 
     lay = layout_tree(cfg)
     cross = flow_crossings(cfg)
     eid = element_ids(s)
-    st.info("This is the single trust-boundary exercise for all four labs. The DFD page records elements and flows; this page identifies which flows cross trust boundaries; the following Zones page assigns component criticality. These are related but distinct tasks.")
+    st.info("Canonical trust-boundary exercise (used once in each lab): identify where trust/ownership changes, then validate which flows cross those boundaries. The DFD page does not perform boundary mapping; the next Zones page assigns component criticality separately.")
     st.subheader("🧱 Boundaries")
     rows = []
     for g in sorted(lay["groups"], key=lambda r: (r["depth"], r["x"])):
@@ -4247,7 +4249,7 @@ def render_threat_actors_page():
     cfg = current_workshop
     s = cfg["scenario"]
     items = get_annotations(ws)
-    st.header("Step 5: Threat Actors — Who Would Attack, and Where Do They Get In?")
+    st.header("Stage 6: Threat Actors — Who Would Attack, and Where Do They Get In?")
     scope_reminder()
     st.markdown("""
     <div class="methodology-step">
@@ -4311,7 +4313,7 @@ def render_stride_mapping_page():
     s = cfg["scenario"]
     smap = get_stride_map(ws)
     rows = element_rows(cfg)
-    st.header("Step 5 (cont.): STRIDE Mapping on the Architecture")
+    st.header("Stage 7: Map STRIDE to DFD Elements")
     scope_reminder()
     st.markdown("""
     <div class="methodology-step">
@@ -4410,7 +4412,7 @@ def attack_matrix_html(records):
 def render_mitre_page():
     cfg = current_workshop
     recs = st.session_state.user_answers
-    st.header("Step 6: Map Your Threats to MITRE ATT&CK")
+    st.header("Stage 9: Map Threats to MITRE ATT&CK and CAPEC")
     scope_reminder()
     st.markdown(f"""
     <div class="methodology-step">
@@ -4576,11 +4578,13 @@ def stage_status():
          f"Scope statement, {len(sc['must_never'])} must-never rules, {len(sc['assumptions'])} assumptions, {len(sc['exclusions']) + len(sc['oos_components'])} exclusions"),
         ("arch", "Architecture", "🏛️", n_assets >= 2, f"{len(cfg['scenario']['components'])} components in their environments, {n_assets} assets labelled"),
         ("dfd", "DFD", "🗺️", True, f"{len(cfg['scenario']['components'])} elements and {len(cfg['scenario']['data_flows'])} data flows identified"),
-        ("trust", "Trust boundaries", "🚧", boundary_checked(ws) and bool(st.session_state.get("zone_labelling_done")),
-         "Boundaries drawn, crossing flows identified, zones of trust applied"),
-        ("stride", "STRIDE", "⚡", n >= tgt and n_actors >= 2 and mapped >= max(1, int(0.6 * len(elems))),
+        ("trust", "Trust boundaries", "🚧", boundary_checked(ws),
+         "Trust/ownership changes identified and crossing flows validated"),
+        ("zones", "Zones of trust", "🏷️", bool(st.session_state.get("zone_labelling_done")),
+         "Component criticality assigned and reviewed separately from boundaries"),
+        ("stride", "Threat discovery / STRIDE", "⚡", n >= tgt and n_actors >= 2 and mapped >= max(1, int(0.6 * len(elems))),
          f"{n_actors} threat actors, {mapped}/{len(elems)} elements STRIDE-mapped, {n}/{tgt} threats identified"),
-        ("mitre", "ATT&CK", "🎯", n > 0 and all(r.get("mitre") or (r.get("mitre_note", "").strip() and "no suitable" in r.get("mitre_note", "").lower()) for r in recs),
+        ("mitre", "ATT&CK + CAPEC", "🎯", n > 0 and all(r.get("mitre") or (r.get("mitre_note", "").strip() and "no suitable" in r.get("mitre_note", "").lower()) for r in recs),
          f"{mit} mapped to ATT&CK; {sum(1 for r in recs if not r.get('mitre') and r.get('mitre_note', '').strip() and 'no suitable' in r.get('mitre_note', '').lower())} justified non-mappings"),
         ("scoring", "Scoring", "📊", n > 0 and rated == n, f"{rated}/{n} threats scored (impact × likelihood, 1–9)"),
         ("controls", "Controls", "🛡️", n > 0 and ctl == n, f"{ctl}/{n} threats have controls mapped"),
@@ -4623,8 +4627,8 @@ def render_stage_review():
         if assets:
             st.markdown("**Assets:** " + "; ".join(f"{i['id']} {i['label']} (on {i['target']})" for i in assets))
     with tabs[2]:
-        st.dataframe(pd.DataFrame([{"ID": eid[c["name"]], "Element": c["name"], "Kind": KIND_LABEL[c["type"]], "Zone": c.get("zone", "N/A"),
-                                    "Score (0-9)": c.get("zone_score", "?")} for c in s["components"]]), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame([{"ID": eid[c["name"]], "Element": c["name"], "Kind": KIND_LABEL[c["type"]],
+                                    "Description": c.get("description", "")} for c in s["components"]]), use_container_width=True, hide_index=True)
         st.dataframe(pd.DataFrame([{"ID": eid[_flow_key(f)], "Flow": _flow_key(f), "Data": f["data"], "Protocol": f["protocol"]}
                                    for f in s["data_flows"]]), use_container_width=True, hide_index=True)
     with tabs[3]:
@@ -4632,6 +4636,11 @@ def render_stage_review():
         st.dataframe(pd.DataFrame([{"ID": eid[k], "Flow": k, "Boundaries crossed": ", ".join(v) or "—"} for k, v in cross.items()]),
                      use_container_width=True, hide_index=True)
     with tabs[4]:
+        st.markdown("**Component criticality zones**")
+        st.dataframe(pd.DataFrame([{"Element": c["name"], "Type": KIND_LABEL[c["type"]],
+                                    "Zone": c.get("zone", "N/A"), "Score (0–9)": c.get("zone_score", "?")}
+                                   for c in s["components"]]), hide_index=True, use_container_width=True)
+    with tabs[5]:
         actors = get_actors(ws)
         if actors:
             st.markdown("**Threat actors**")
@@ -4647,7 +4656,7 @@ def render_stage_review():
             css = "correct-answer" if pts == 4 else "partial-answer" if pts >= 2 else "incorrect-answer"
             st.markdown(f"""<div class="{css}"><strong>{a['matched_threat_id']}</strong>: {pred.get('threat', '')}<br>
             Your answer: {a['stride']} on {_esc(a['component'])} · Zone rule: {pred.get('stride_rule_applied', 'N/A')}</div>""", unsafe_allow_html=True)
-    with tabs[5]:
+    with tabs[6]:
         mp = [r for r in recs if r.get("mitre")]
         if mp:
             st.markdown(attack_matrix_html(mp), unsafe_allow_html=True)
@@ -4656,7 +4665,7 @@ def render_stage_review():
                                         "Attack path": r.get("mitre_note", "")} for r in mp]), hide_index=True, use_container_width=True)
         else:
             st.info("No threats were mapped to ATT&CK.")
-    with tabs[6]:
+    with tabs[7]:
         rated = [r for r in recs if r.get("rated")]
         if rated:
             st.markdown(risk_matrix_html([(r["likelihood_n"], r["impact_n"], r["matched_threat_id"]) for r in rated]), unsafe_allow_html=True)
@@ -4665,7 +4674,7 @@ def render_stage_review():
                                        for r in sorted(rated, key=lambda r: -rec_risk(r))]), hide_index=True, use_container_width=True)
         else:
             st.info("No threats were scored.")
-    with tabs[7]:
+    with tabs[8]:
         for a in recs:
             if not a.get("controlled"):
                 continue
@@ -4677,7 +4686,7 @@ def render_stage_review():
             used = any(a["stride"] == stride_cat for a in recs)
             st.markdown(f"""<div class="owasp-box">{'✅' if used else '⭕'} <strong>{stride_cat}</strong> → {', '.join(owasp_info['owasp'])}<br>
             Key controls: {'; '.join(owasp_info['controls'][:2])}</div>""", unsafe_allow_html=True)
-    with tabs[8]:
+    with tabs[9]:
         res = [r for r in recs if r.get("residual")]
         if res:
             st.dataframe(pd.DataFrame([{"Threat": r["matched_threat_id"], "Inherent": rec_risk(r), "Residual": rec_residual(r),
@@ -4687,7 +4696,7 @@ def render_stage_review():
             st.markdown("**Open questions**\n" + "\n".join(f"- {q}" for q in oq["questions"]))
         if oq["accepted"]:
             st.markdown(f"**Accepted-risk statement:** {oq['accepted']}")
-    with tabs[9]:
+    with tabs[10]:
         st.markdown(f"**Owner:** {plan['owner'] or '—'}  ·  **Security's role:** {plan['security_role'] or '—'}  ·  **Next lightweight review:** {plan['next_review'] or '—'}")
         for title, key in (("Full-workshop triggers", "full"), ("Lightweight review checks", "light"), ("Update triggers", "triggers")):
             if plan[key]:
@@ -4891,7 +4900,7 @@ if not st.session_state.selected_workshop:
         This lab uses the <strong>Infosec Institute 4-Step Methodology</strong> — the same framework used
         by Microsoft, OWASP, and enterprise security teams. Each workshop adds a new layer of complexity,
         building on what you've learned before.<br><br>
-        Every workshop follows the same <strong>10 stages</strong>: Scope → Architecture → DFD → Trust boundaries → STRIDE → ATT&amp;CK → Scoring → Controls → Residual risk → Review.
+        Every workshop follows the same workflow: Scope → Architecture → DFD → Trust boundaries → Zones of trust → Threat actors → STRIDE → ATT&amp;CK/CAPEC → Risk → Controls → Residual risk → Review. The DFD is not where trust boundaries are mapped.
         </div>
         """, unsafe_allow_html=True)
 
@@ -5138,7 +5147,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Stage tracker: Scope → DFD → STRIDE → Scoring → Controls → Residual risk → Review ──
+# ── Stage tracker: canonical workflow; page IDs remain stable for saved progress ──
 _page = int(st.session_state.current_step)
 _page_name, _stage_id = PAGES.get(_page, ("", "scope"))
 _stage_idx = STAGE_IDS.index(_stage_id)
@@ -5150,6 +5159,7 @@ for _i, (_sid, _label, _icon) in enumerate(STAGES):
 _sep = '<div class="stg-line"></div>'
 st.markdown('<div class="stepper">' + _sep.join(_parts) + '</div>', unsafe_allow_html=True)
 st.caption(f"Stage {_stage_idx + 1} of {len(STAGES)} · **{STAGES[_stage_idx][1]}** — {_page_name}")
+st.caption(f"Application build: {APP_BUILD} · If you do not see this build label, Streamlit is running a different file/process.")
 st.progress(((PAGE_ORDER.index(_page) + 1) / len(PAGE_ORDER)) if _page in PAGE_ORDER else 0.05)
 st.markdown("---")
 
@@ -5190,7 +5200,7 @@ elif st.session_state.current_step == 2:
     st.markdown("""
     <div class="methodology-step">
     <strong>🗺️ Stage 3 · DFD (Infosec Step 1: Design)</strong><br>
-    The first step is to create a Data Flow Diagram (DFD) that identifies all 
+    Create a Data Flow Diagram (DFD) that identifies all 
     <strong>Interactors</strong> (external entities), <strong>Modules</strong> (processes and data stores), 
     and <strong>Connections</strong> (data flows between them).<br><br>
     This visual representation is the foundation on which all subsequent threat analysis is built.
@@ -5280,7 +5290,7 @@ elif st.session_state.current_step == 2:
         <div style="font-size:0.82em;color:#555;margin-top:8px">
           <strong>STRIDE exposure:</strong><br>
           ⚫ All 6 STRIDE categories can apply<br>
-          <em style="color:#888">Highest-complexity threat surface — the zone determines which rules apply</em>
+          <em style="color:#888">Highest-complexity threat surface — zone context helps prioritise hypotheses</em>
         </div>
         </div>
         """, unsafe_allow_html=True)
@@ -5293,7 +5303,7 @@ elif st.session_state.current_step == 2:
         <div style="font-size:0.82em;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#3E8842;margin-bottom:8px">Data Flows</div>
         <p style="font-size:0.88em;color:#444;margin:0 0 10px 0">Every path <strong>data travels</strong> between components — the network of information exchange.</p>
         <div style="background:#EFEFEE;border-radius:6px;padding:8px 10px;margin:6px 0;font-size:0.82em">
-          <strong>Zone direction = STRIDE rule</strong><br>
+          <strong>Zone direction = STRIDE discovery hint</strong><br>
           <span style="color:#666">Examples: HTTPS requests, SQL queries, Kafka messages, BLE</span>
         </div>
         <div style="font-size:0.82em;color:#555;margin-top:8px">
@@ -5307,89 +5317,30 @@ elif st.session_state.current_step == 2:
 
     st.markdown("---")
 
-    # Component breakdown for this workshop
-    st.subheader(f"📦 {scenario['title']} – DFD Elements")
-
-    comp_types = {"external_entity": [], "process": [], "datastore": []}
-    for comp in scenario["components"]:
-        comp_types[comp["type"]].append(comp)
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("**👤 Interactors (External Entities)**")
-        for comp in comp_types["external_entity"]:
-            st.markdown(f"""<div class="component-card">
-            <strong>{comp['name']}</strong><br>
-            <small>{comp['description']}</small>
-            </div>""", unsafe_allow_html=True)
-    with col2:
-        st.markdown("**⚙️ Modules (Processes)**")
-        for comp in comp_types["process"]:
-            st.markdown(f"""<div class="component-card">
-            <strong>{comp['name']}</strong><br>
-            <small>{comp['description']}</small>
-            </div>""", unsafe_allow_html=True)
-    with col3:
-        st.markdown("**💾 Modules (Data Stores)**")
-        for comp in comp_types["datastore"]:
-            st.markdown(f"""<div class="component-card">
-            <strong>{comp['name']}</strong><br>
-            <small>{comp['description']}</small>
-            </div>""", unsafe_allow_html=True)
-
+    # One canonical inventory only: the diagram plus the adjacent table below.
+    # Avoid rendering component cards and a separate flow table here, as both are
+    # repeated in the tabbed inventory and made the original DFD page unnecessarily duplicative.
     st.markdown("---")
-    st.subheader("🔗 Connections (Data Flows)")
-
-    # ── Key concept callout ───────────────────────────────────────────────
-    st.markdown("""
-    <div class="key-concept">
-      <h4>Key Concept: Why Data Flows Are the Heart of Threat Modeling</h4>
-      <p style="margin:0;font-size:0.95em">Every security failure ultimately involves data moving somewhere it shouldn't,
-      or being modified somewhere it shouldn't. Data flows are where <strong>Tampering</strong>,
-      <strong>Information Disclosure</strong>, and <strong>Denial of Service</strong> threats
-      are discovered. The protocol matters too — HTTPS is encrypted,
-      plain HTTP is not. MQTT/BLE in IoT may have no authentication at all.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    flows_df = pd.DataFrame([{
-        "Source": f["source"], "→": "→", "Destination": f["destination"],
-        "Data Type": f["data"], "Protocol": f["protocol"]
-    } for f in scenario["data_flows"]])
-    st.dataframe(flows_df, use_container_width=True, hide_index=True)
-
-    # Trust-boundary mapping is deliberately handled on the dedicated Trust Boundaries page
-    # (page 15). Keep this page focused on DFD elements and data flows to avoid repetition.
-
-    st.markdown("""
-    <div class="practical-task">
-    <strong>🎯 Step 1 Complete</strong> – You now have a complete picture of the system design:<br>
-    • All <strong>Interactors</strong> (external entities) identified<br>
-    • All <strong>Modules</strong> (processes + data stores) listed<br>
-    • All <strong>Connections</strong> (data flows) documented with protocols<br><br>
-    Next: Apply <strong>Zones of Trust</strong> to every component using the 0–9 criticality scale.
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.subheader("🗺️ Your Data-Flow Diagram")
+    st.subheader("🗺️ DFD — elements and flows (single source of truth)")
     st.markdown("""
     <div class="info-box">
-    The architecture is now simplified into <b>DFD notation</b>: <b>rectangle</b> = external entity (E) &nbsp;|&nbsp;
-    <b>oval</b> = process (P) &nbsp;|&nbsp; <b>parallel lines</b> = data store (D) &nbsp;|&nbsp; <b>arrow</b> = data flow (F).
-    The IDs are reused throughout the threat model. Trust-boundary identification is handled in the next dedicated stage.
+    This page documents the system's DFD only: external entities, processes, data stores and data flows.
+    It intentionally does <strong>not</strong> mark trust boundaries or classify boundary-crossing flows.
+    Those are assessed once on the dedicated <strong>Trust Boundaries</strong> page; component criticality is assessed once on <strong>Zones of Trust</strong>.
     </div>
     """, unsafe_allow_html=True)
-    diag_tabs = st.tabs(["🗺️ Data-flow diagram", "📊 Elements & flows (with IDs)"])
+    diag_tabs = st.tabs(["🗺️ Data-flow diagram", "📋 DFD inventory (elements + flows)"])
     with diag_tabs[0]:
         show_architecture_diagram(current_workshop, mode="dfd", key_suffix="s2_dfd")
     with diag_tabs[1]:
         _eid = element_ids(current_workshop["scenario"])
+        st.markdown("**Elements**")
         st.dataframe(pd.DataFrame([{"ID": _eid[c["name"]], "Element": c["name"], "Type": KIND_LABEL[c["type"]],
                                     "Description": c["description"]} for c in current_workshop["scenario"]["components"]]),
                      use_container_width=True, hide_index=True)
-        st.markdown("**Data flows:**")
-        st.dataframe(pd.DataFrame([{"ID": _eid[_flow_key(f)], "Flow": _flow_key(f), "Data": f["data"], "Protocol": f["protocol"]}
+        st.markdown("**Data flows**")
+        st.dataframe(pd.DataFrame([{"ID": _eid[_flow_key(f)], "Source": f["source"], "Destination": f["destination"],
+                                    "Flow": _flow_key(f), "Data": f["data"], "Protocol": f["protocol"]}
                                    for f in current_workshop["scenario"]["data_flows"]]), use_container_width=True, hide_index=True)
 
     nav_buttons(1, "", 3, "", key="p2")
@@ -5399,7 +5350,7 @@ elif st.session_state.current_step == 2:
 # PAGE 3 · STAGE 2 DFD — ZONES OF TRUST
 # ─────────────────────────────────────────────────────────────────────────────
 elif st.session_state.current_step == 3:
-    st.header("Step 5: Assign Component Criticality Zones")
+    st.header("Stage 5: Assign Component Criticality Zones")
     scope_reminder()
 
     st.markdown("""
@@ -5408,8 +5359,7 @@ elif st.session_state.current_step == 3:
     Every component in your DFD must be labeled with a <strong>criticality zone</strong>.
     Zones indicate how sensitive/trusted a component is, using both a <em>label</em> 
     (e.g., "Critical") and a <em>numerical score</em> (0–9).<br><br>
-    <strong>Why this matters:</strong> The <em>direction</em> of data flows between zones 
-    determines which STRIDE categories apply — this is the mechanical heart of the methodology.
+    <strong>Why this matters:</strong> Zone direction can suggest STRIDE hypotheses, but it does not determine the answer by itself. Validate each threat against identities, privileges, data, entry points and the scenario.
     </div>
     """, unsafe_allow_html=True)
 
@@ -5619,7 +5569,7 @@ elif st.session_state.current_step == 3:
 # PAGE 4 · STAGE 3 STRIDE — ZONE RULES
 # ─────────────────────────────────────────────────────────────────────────────
 elif st.session_state.current_step == 4:
-    st.header("Step 5 (cont.): STRIDE Zone Rules & Threat Discovery")
+    st.header("Stage 7: STRIDE Rules — Discovery Heuristics")
     scope_reminder()
 
     st.markdown("""
@@ -6049,7 +5999,7 @@ elif st.session_state.current_step == 5:
 # PAGE 6 · STAGE 3 STRIDE — IDENTIFY THREATS
 # ─────────────────────────────────────────────────────────────────────────────
 elif st.session_state.current_step == 6:
-    st.header("Step 5 (cont.): Identify Threats with STRIDE")
+    st.header("Stage 8: Identify and Justify Threats")
     scope_reminder()
 
     st.markdown(f"""
@@ -6248,7 +6198,7 @@ elif st.session_state.current_step == 7:
 # PAGE 8 · STAGE 5 CONTROLS — OWASP MAPPING
 # ─────────────────────────────────────────────────────────────────────────────
 elif st.session_state.current_step == 8:
-    st.header("Step 8 (start): Map STRIDE Threats to Controls")
+    st.header("Stage 11: Map STRIDE Threats to OWASP and Controls")
     scope_reminder()
     st.markdown("""
     <div class="methodology-step">
@@ -6439,7 +6389,7 @@ elif st.session_state.current_step == 11:
 # PAGE 12 · STAGE 7 REVIEW — ASSESSMENT & REPORT
 # ─────────────────────────────────────────────────────────────────────────────
 elif st.session_state.current_step == 12:
-    st.header("Step 10 (cont.): Assessment & Threat-Mapped Architecture Review")
+    st.header("Stage 14: Review Assessment and Threat-Mapped Architecture")
     recalc_totals()
     scope_reminder()
 
@@ -6758,4 +6708,4 @@ elif st.session_state.current_step == 13:
             st.rerun()
 
 st.markdown("---")
-st.caption("STRIDE Threat Modeling Learning Lab | Scope → Architecture → DFD → Trust boundaries → STRIDE → ATT&CK → Scoring → Controls → Residual risk → Review")
+st.caption(f"STRIDE Threat Modeling Learning Lab · {APP_BUILD} | Scope → Architecture → DFD → Trust boundaries → Zones → Threat actors → STRIDE → ATT&CK/CAPEC → Risk → Controls → Residual risk → Review")
